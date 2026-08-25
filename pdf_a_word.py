@@ -125,7 +125,7 @@ ALL_LABELS = LEFT_LABELS + RIGHT_LABELS
 LABEL_RE = re.compile("|".join(f"(?P<{k}>{p})" for k, p in ALL_LABELS))
 
 NUMERO_RE = re.compile(r"\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b")
-PAGINA_RE = re.compile(r"P[aá]gina\W{0,4}(\d+\s*/\s*\d+)")
+PAGINA_RE = re.compile(r"P[aá]gina[^\d]{0,40}(\d+\s*/\s*\d+)")
 
 
 def parse_header(text: str):

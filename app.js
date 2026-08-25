@@ -49,7 +49,7 @@ const ALL_LABELS = LEFT_LABELS.concat(RIGHT_LABELS);
 const LABEL_RE_SOURCE = ALL_LABELS.map(([k, p]) => `(?<${k}>${p})`).join("|");
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
-const PAGINA_RE = /P[aá]gina\W{0,4}(\d+\s*\/\s*\d+)/;
+const PAGINA_RE = /P[aá]gina[^\d]{0,40}(\d+\s*\/\s*\d+)/;
 
 function parseHeader(text) {
   const lines = text.split("\n");
