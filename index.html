@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF a Word · SPI Swissôtel Lima</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Convertidor de manuales PDF → Word</h1>
+    <p class="subtitle">
+      Convierte los manuales de procedimientos "SPI Swissôtel Lima" (PDF escaneado)
+      a un documento Word editable, directamente en tu navegador. No se sube ningún
+      archivo a un servidor: todo el proceso (OCR y generación del .docx) ocurre en tu propia
+      computadora.
+    </p>
+  </header>
+
+  <main>
+    <section class="card">
+      <label class="file-drop" id="dropZone">
+        <input type="file" id="fileInput" accept="application/pdf" multiple hidden>
+        <span id="dropLabel">Selecciona uno o varios PDF, o arrástralos aquí</span>
+      </label>
+
+      <div class="options">
+        <label>
+          Rango de páginas (opcional, ej. <code>2-3</code>):
+          <input type="text" id="pageRange" placeholder="todas">
+        </label>
+      </div>
+
+      <button id="convertBtn" disabled>Convertir a Word</button>
+    </section>
+
+    <section class="card" id="log" aria-live="polite"></section>
+
+    <section class="card" id="downloads" hidden>
+      <h2>Documentos generados</h2>
+      <ul id="downloadList"></ul>
+    </section>
+
+    <section class="card notice">
+      <h2>Cómo funciona (y sus límites)</h2>
+      <ol>
+        <li>Cada página del PDF se rasteriza a imagen en tu navegador.</li>
+        <li>Se le aplica OCR en español (Tesseract.js).</li>
+        <li>Si el texto reconocido coincide con la cabecera fija de estos
+            manuales (SPI SWISSÔTEL LIMA / N° / Área / Campo / Norma / fechas),
+            la página se reconstruye como texto real y editable.</li>
+        <li>Si una página no tiene ese patrón (formularios, organigramas,
+            portadas), se inserta tal cual como imagen, para no perder
+            información aunque no quede editable.</li>
+        <li>El OCR nunca es 100% exacto. Revisa siempre el .docx resultante
+            antes de usarlo.</li>
+      </ol>
+      <p>
+        Esta página web es la versión para navegador del script
+        <code>pdf_a_word.py</code> de este mismo repositorio: reproduce la
+        misma lógica de reconocimiento, pero corre enteramente en el cliente
+        (pdf.js + Tesseract.js + docx.js), por lo que funciona en GitHub Pages
+        sin necesidad de un servidor.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://github.com/leidercostoshotel-code/conversionesleider" target="_blank" rel="noopener">
+      Ver el repositorio en GitHub
+    </a>
+  </footer>
+
+  <!-- pdf.js: rasteriza cada página del PDF a un <canvas> -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- Tesseract.js: OCR en el navegador -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <!-- docx: generación del .docx en el navegador -->
+  <script src="https://unpkg.com/docx@8.5.0/build/index.js"></script>
+
+  <script src="app.js"></script>
+</body>
+</html>
