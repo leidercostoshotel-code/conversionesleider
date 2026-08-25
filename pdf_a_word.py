@@ -147,7 +147,35 @@ def parse_header(text: str):
         if re.search(r"OBJETIVO\s*:", ln, re.I) or re.search(r"PASOS A SEGUIR", ln, re.I):
             body_start_idx = i
             break
-    header_lines = lines[:body_start_idx] if body_start_idx is not None else lines[:10]
+
+    if body_start_idx is None:
+        # Página de continuación de un procedimiento de varias páginas: la
+        # cabecera se repite en cada página, pero "OBJETIVO:"/"PASOS A
+        # SEGUIR" solo aparecen en la primera. Antes, al no encontrar esos
+        # marcadores, se descartaba TODO el cuerpo de la página (quedaba
+        # solo la cabecera y el resto en blanco). En vez de eso, se ubica
+        # el final real de la cabecera: la última línea con alguna etiqueta
+        # fija, más alguna línea corta de continuación (valores envueltos
+        # a varias líneas, como "Norma" o "Autorizado por...").
+        last_label_idx = None
+        for i, ln in enumerate(lines[:15]):
+            if LABEL_RE.search(ln):
+                last_label_idx = i
+        if last_label_idx is None:
+            body_start_idx = min(10, len(lines))
+        else:
+            idx = last_label_idx + 1
+            while (
+                idx < len(lines)
+                and idx <= last_label_idx + 2
+                and lines[idx].strip()
+                and len(lines[idx].strip()) <= 50
+                and not NUM_ITEM_RE.match(lines[idx])
+            ):
+                idx += 1
+            body_start_idx = idx
+
+    header_lines = lines[:body_start_idx]
     header_text = "\n".join(header_lines)
 
     numero_match = NUMERO_RE.search(header_text)
@@ -172,7 +200,7 @@ def parse_header(text: str):
             fields[key] = (fields.get(key, "") + " " + value).strip() if key in fields and key not in ("area", "campo") else value
             last_key = key
 
-    body_text = "\n".join(lines[body_start_idx:]) if body_start_idx is not None else ""
+    body_text = "\n".join(lines[body_start_idx:])
     return fields, body_text
 
 

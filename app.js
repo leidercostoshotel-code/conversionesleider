@@ -60,7 +60,38 @@ function parseHeader(text) {
       break;
     }
   }
-  const headerLines = bodyStartIdx !== null ? lines.slice(0, bodyStartIdx) : lines.slice(0, 10);
+
+  if (bodyStartIdx === null) {
+    // Página de continuación de un procedimiento de varias páginas: la
+    // cabecera se repite en cada página, pero "OBJETIVO:"/"PASOS A SEGUIR"
+    // solo aparecen en la primera. Antes, al no encontrar esos marcadores,
+    // se descartaba TODO el cuerpo de la página (quedaba solo la cabecera
+    // y el resto en blanco). En vez de eso, se ubica el final real de la
+    // cabecera: la última línea con alguna etiqueta fija, más alguna línea
+    // corta de continuación (valores envueltos a varias líneas, como
+    // "Norma" o "Autorizado por...").
+    let lastLabelIdx = null;
+    for (let i = 0; i < Math.min(lines.length, 15); i++) {
+      if (new RegExp(LABEL_RE_SOURCE).test(lines[i])) lastLabelIdx = i;
+    }
+    if (lastLabelIdx === null) {
+      bodyStartIdx = Math.min(10, lines.length);
+    } else {
+      let idx = lastLabelIdx + 1;
+      while (
+        idx < lines.length &&
+        idx <= lastLabelIdx + 2 &&
+        lines[idx].trim() &&
+        lines[idx].trim().length <= 50 &&
+        !NUM_ITEM_RE.test(lines[idx])
+      ) {
+        idx++;
+      }
+      bodyStartIdx = idx;
+    }
+  }
+
+  const headerLines = lines.slice(0, bodyStartIdx);
   const headerText = headerLines.join("\n");
 
   const numeroMatch = NUMERO_RE.exec(headerText);
@@ -102,7 +133,7 @@ function parseHeader(text) {
     }
   }
 
-  const bodyText = bodyStartIdx !== null ? lines.slice(bodyStartIdx).join("\n") : "";
+  const bodyText = lines.slice(bodyStartIdx).join("\n");
   return [fields, bodyText];
 }
 
