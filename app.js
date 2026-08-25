@@ -169,16 +169,51 @@ function stripNoise(text) {
   return lines.join("\n");
 }
 
+function isHeadingLine(line) {
+  // Título de sección corto, con mayúscula inicial y terminado en ":"
+  // (p. ej. "RESPONSABLES:", "BASE LEGAL:", "CARACTERISTICAS:").
+  const trimmed = line.trim();
+  return (
+    trimmed.length > 0 &&
+    trimmed.length <= 45 &&
+    trimmed.endsWith(":") &&
+    trimmed[0] === trimmed[0].toUpperCase() &&
+    trimmed[0] !== trimmed[0].toLowerCase()
+  );
+}
+
 function splitSection(text, startPat, endPats) {
+  // Devuelve [prefijo_antes_de_la_marca, valor_de_la_sección, resto].
+  // `prefijo` es lo que había ANTES de encontrar `startPat` -- normalmente
+  // vacío, salvo cuando hay una sección intermedia no prevista (p. ej.
+  // "BASE LEGAL:" entre "OBJETIVO:" y "RESPONSABLES:") que de otro modo se
+  // perdería en silencio. Si no se encuentra `startPat`, devuelve
+  // [null, null, text] sin consumir nada.
   const m = new RegExp(startPat, "i").exec(text);
-  if (!m) return [null, text];
+  if (!m) return [null, null, text];
+  const prefix = text.slice(0, m.index);
   const rest = text.slice(m.index + m[0].length);
   let endPos = rest.length;
   for (const ep of endPats) {
     const em = new RegExp(ep, "i").exec(rest);
     if (em && em.index < endPos) endPos = em.index;
   }
-  return [rest.slice(0, endPos).trim(), rest.slice(endPos)];
+  // Además de los patrones explícitos (que solo cubren los nombres de
+  // sección esperados), cualquier línea que en sí misma parezca un título
+  // de sección marca el final de este bloque. Esto generaliza a secciones
+  // no previstas (p. ej. "BASE LEGAL:", "CARACTERISTICAS:") que de otro
+  // modo quedarían arrastradas dentro de "OBJETIVO" o "RESPONSABLES" hasta
+  // la siguiente sección conocida.
+  let pos = 0;
+  for (const line of rest.split("\n")) {
+    if (pos >= endPos) break;
+    if (pos > 0 && isHeadingLine(line)) {
+      endPos = pos;
+      break;
+    }
+    pos += line.length + 1; // +1 por el "\n" separador
+  }
+  return [prefix, rest.slice(0, endPos).trim(), rest.slice(endPos)];
 }
 
 function cleanParagraph(text) {
@@ -195,16 +230,23 @@ function parseBody(bodyText) {
   const blocks = [];
   let remaining = bodyText;
 
-  let objetivo;
-  [objetivo, remaining] = splitSection(
+  let preObjetivo, objetivo;
+  [preObjetivo, objetivo, remaining] = splitSection(
     remaining, "OBJETIVO\\s*:", ["RESPONSABLES\\s*:", "PASOS A SEGUIR", "POL[IÍ]TICAS"]
   );
+  if (preObjetivo && preObjetivo.trim()) blocks.push(...parseSteps(preObjetivo));
   if (objetivo) blocks.push({ type: "objetivo", text: cleanParagraph(objetivo) });
 
-  let responsables;
-  [responsables, remaining] = splitSection(
+  let preResponsables, responsables;
+  [preResponsables, responsables, remaining] = splitSection(
     remaining, "RESPONSABLES\\s*:", ["PASOS A SEGUIR", "POL[IÍ]TICAS"]
   );
+  if (preResponsables && preResponsables.trim()) {
+    // Sección intermedia no prevista (p. ej. "BASE LEGAL:") entre
+    // "OBJETIVO:" y "RESPONSABLES:": se reconstruye con el parser
+    // genérico en vez de perderla.
+    blocks.push(...parseSteps(preResponsables));
+  }
   if (responsables) {
     const names = responsables.split("\n")
       .map((ln) => ln.trim())
@@ -251,14 +293,24 @@ function parseSteps(text) {
       i++; continue;
     }
 
+    // Un título de sección corto, en mayúscula inicial y terminado en ":"
+    // (p. ej. "CONTROLES:", "REMUNERACIONES:", "PAGOS:") es en sí mismo una
+    // señal inequívoca de subtítulo en este tipo de manuales -- no hace
+    // falta que además reinicie una lista en "1.".
+    if (isHeadingLine(line)) {
+      if (current) { blocks.push(current); current = null; }
+      blocks.push({ type: "subheading", text: line });
+      i++; continue;
+    }
+
     const looksLikeHeading =
       line.length <= 45 &&
-      !/[.,:;]$/.test(line) &&
+      !/[.,;]$/.test(line) &&
       line.length > 0 &&
       line[0] === line[0].toUpperCase() &&
       line[0] !== line[0].toLowerCase();
 
-    // Un subtítulo real casi siempre viene seguido de un ítem "1."
+    // Un subtítulo sin ":" casi siempre viene seguido de un ítem "1."
     // (la lista de esa sub-sección vuelve a empezar). Usamos esa
     // señal aunque haya un ítem numerado abierto en ese momento.
     let nextStartsListAt1 = false;

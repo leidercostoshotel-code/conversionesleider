@@ -237,17 +237,45 @@ def strip_noise(text: str) -> str:
     return "\n".join(lines)
 
 
+def is_heading_line(line: str) -> bool:
+    """Título de sección corto, con mayúscula inicial y terminado en ':'
+    (p. ej. "RESPONSABLES:", "BASE LEGAL:", "CARACTERISTICAS:")."""
+    line = line.strip()
+    return bool(line) and len(line) <= 45 and line.endswith(":") and line[:1].isupper()
+
+
 def split_section(text, start_pat, end_pats):
+    """Devuelve (prefijo_antes_de_la_marca, valor_de_la_sección, resto).
+    `prefijo` es lo que había ANTES de encontrar `start_pat` -- normalmente
+    vacío, salvo cuando hay una sección intermedia no prevista (p. ej.
+    "BASE LEGAL:" entre "OBJETIVO:" y "RESPONSABLES:") que de otro modo se
+    perdería en silencio. Si no se encuentra `start_pat`, devuelve
+    (None, None, text) sin consumir nada."""
     m = re.search(start_pat, text, re.I)
     if not m:
-        return None, text
+        return None, None, text
+    prefix = text[:m.start()]
     rest = text[m.end():]
     end_pos = len(rest)
     for ep in end_pats:
         em = re.search(ep, rest, re.I)
         if em and em.start() < end_pos:
             end_pos = em.start()
-    return rest[:end_pos].strip(), rest[end_pos:]
+    # Además de los patrones explícitos (que solo cubren los nombres de
+    # sección esperados), cualquier línea que en sí misma parezca un
+    # título de sección marca el final de este bloque. Esto generaliza a
+    # secciones no previstas (p. ej. "BASE LEGAL:", "CARACTERISTICAS:")
+    # que de otro modo quedarían arrastradas dentro de "OBJETIVO" o
+    # "RESPONSABLES" hasta la siguiente sección conocida.
+    pos = 0
+    for line in rest.splitlines(keepends=True):
+        if pos >= end_pos:
+            break
+        if pos > 0 and is_heading_line(line):
+            end_pos = pos
+            break
+        pos += len(line)
+    return prefix, rest[:end_pos].strip(), rest[end_pos:]
 
 
 def parse_body(body_text: str):
@@ -258,15 +286,22 @@ def parse_body(body_text: str):
     blocks = []
     remaining = body_text
 
-    objetivo, remaining = split_section(
+    pre_objetivo, objetivo, remaining = split_section(
         remaining, r"OBJETIVO\s*:", [r"RESPONSABLES\s*:", r"PASOS A SEGUIR", r"POL[IÍ]TICAS"]
     )
+    if pre_objetivo and pre_objetivo.strip():
+        blocks.extend(parse_steps(pre_objetivo))
     if objetivo:
         blocks.append({"type": "objetivo", "text": clean_paragraph(objetivo)})
 
-    responsables, remaining = split_section(
+    pre_responsables, responsables, remaining = split_section(
         remaining, r"RESPONSABLES\s*:", [r"PASOS A SEGUIR", r"POL[IÍ]TICAS"]
     )
+    if pre_responsables and pre_responsables.strip():
+        # Sección intermedia no prevista (p. ej. "BASE LEGAL:") entre
+        # "OBJETIVO:" y "RESPONSABLES:": se reconstruye con el parser
+        # genérico en vez de perderla.
+        blocks.extend(parse_steps(pre_responsables))
     if responsables:
         names = [ln.strip(" .") for ln in responsables.splitlines() if ln.strip()]
         blocks.append({"type": "responsables", "names": names})
@@ -319,12 +354,24 @@ def parse_steps(text):
             i += 1
             continue
 
+        # Un título de sección corto, en mayúscula inicial y terminado en
+        # ":" (p. ej. "CONTROLES:", "REMUNERACIONES:", "PAGOS:") es en sí
+        # mismo una señal inequívoca de subtítulo en este tipo de manuales
+        # -- no hace falta que además reinicie una lista en "1.".
+        if is_heading_line(line):
+            if current:
+                blocks.append(current)
+                current = None
+            blocks.append({"type": "subheading", "text": line})
+            i += 1
+            continue
+
         looks_like_heading = (
             len(line) <= 45
-            and not line.endswith((".", ",", ":", ";"))
+            and not line.endswith((".", ",", ";"))
             and line[:1].isupper()
         )
-        # Un subtítulo real casi siempre viene seguido de un ítem "1."
+        # Un subtítulo sin ":" casi siempre viene seguido de un ítem "1."
         # (la lista de esa sub-sección vuelve a empezar). Usamos esa
         # señal aunque haya un ítem numerado abierto en ese momento.
         next_starts_list_at_1 = False
