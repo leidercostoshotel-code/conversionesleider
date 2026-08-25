@@ -96,9 +96,17 @@ def pdf_to_images(pdf_path: Path, workdir: Path, dpi: int = DPI, page_range=None
 
 
 def ocr_page(image_path: Path) -> str:
-    """OCR en español sobre una imagen de página. Devuelve el texto plano."""
+    """OCR en español sobre una imagen de página. Devuelve el texto plano.
+
+    Se usa --psm 4 ("una sola columna de texto de tamaños variables") en
+    vez de --psm 6 ("bloque uniforme de texto): con --psm 6, Tesseract
+    tiende a fusionar la tabla de cabecera (dos columnas) en una sola
+    línea por fila y así se pierde por completo la segunda línea de esa
+    tabla (donde está "Página : X/Y"), lo que hacía que la página cayera
+    al modo imagen aunque el formato fuera reconocible.
+    """
     result = subprocess.run(
-        ["tesseract", str(image_path), "-", "-l", "spa", "--psm", "6"],
+        ["tesseract", str(image_path), "-", "-l", "spa", "--psm", "4"],
         check=True, capture_output=True, text=True,
     )
     return result.stdout
