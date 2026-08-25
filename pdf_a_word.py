@@ -210,7 +210,12 @@ def parse_header(text: str):
 
 NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})[.\)]\s+(.*)")
 LETTER_ITEM_RE = re.compile(r"^\s*([a-h])\)\s+(.*)")
-BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*]\s+(.*)")
+BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*\+]\s+(.*)")
+# El glifo de viñeta (•), en algunos PDF/fuentes, el OCR lo confunde con una
+# "e" suelta (ambigüedad visual con el punto de la viñeta). Se trata como
+# viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
+# oración), para no confundir la conjunción "e" ("madre e hija").
+BULLET_OCR_E_RE = re.compile(r"^\s*e\s+(?=[A-ZÁÉÍÓÚÑ])(.*)")
 
 # Ruido típico de capturas de un visor web (fecha/hora, migas de pan,
 # barra de usuario, pie con URL y contador de página) que se mete en el
@@ -346,7 +351,7 @@ def parse_steps(text):
             i += 1
             continue
 
-        m = BULLET_ITEM_RE.match(line)
+        m = BULLET_ITEM_RE.match(line) or BULLET_OCR_E_RE.match(line)
         if m:
             if current:
                 blocks.append(current)
@@ -390,7 +395,11 @@ def parse_steps(text):
         if current:
             current["text"] = (current["text"] + " " + line).strip()
         else:
-            blocks.append({"type": "paragraph", "text": line})
+            # OJO: se deja `current` apuntando a este párrafo (no se hace
+            # append todavía) para que la siguiente línea, si es una
+            # continuación envuelta del mismo párrafo, se una aquí en vez
+            # de crear un bloque nuevo por cada línea física del OCR.
+            current = {"type": "paragraph", "text": line}
         i += 1
 
     if current:

@@ -143,7 +143,12 @@ function parseHeader(text) {
 
 const NUM_ITEM_RE = /^\s*(\d{1,2})[.)]\s+(.*)/;
 const LETTER_ITEM_RE = /^\s*([a-h])\)\s+(.*)/;
-const BULLET_ITEM_RE = /^\s*[•·\-*]\s+(.*)/;
+const BULLET_ITEM_RE = /^\s*[•·\-*+]\s+(.*)/;
+// El glifo de viñeta (•), en algunos PDF/fuentes, el OCR lo confunde con una
+// "e" suelta (ambigüedad visual con el punto de la viñeta). Se trata como
+// viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
+// oración), para no confundir la conjunción "e" ("madre e hija").
+const BULLET_OCR_E_RE = /^\s*e\s+(?=[A-ZÁÉÍÓÚÑ])(.*)/;
 
 // Ruido típico de capturas de un visor web (fecha/hora, migas de pan,
 // barra de usuario, pie con URL y contador de página) que se mete en el
@@ -286,7 +291,7 @@ function parseSteps(text) {
       i++; continue;
     }
 
-    m = BULLET_ITEM_RE.exec(line);
+    m = BULLET_ITEM_RE.exec(line) || BULLET_OCR_E_RE.exec(line);
     if (m) {
       if (current) blocks.push(current);
       current = { type: "bullet", text: m[1].trim() };
@@ -328,7 +333,11 @@ function parseSteps(text) {
     if (current) {
       current.text = (current.text + " " + line).trim();
     } else {
-      blocks.push({ type: "paragraph", text: line });
+      // OJO: se deja `current` apuntando a este párrafo (no se hace push
+      // todavía) para que la siguiente línea, si es una continuación
+      // envuelta del mismo párrafo, se una aquí en vez de crear un bloque
+      // nuevo por cada línea física del OCR.
+      current = { type: "paragraph", text: line };
     }
     i++;
   }
