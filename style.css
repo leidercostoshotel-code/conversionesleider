@@ -19,7 +19,7 @@ body {
   line-height: 1.5;
 }
 
-header, main, footer {
+header, main {
   max-width: 760px;
   margin: 0 auto;
 }
@@ -152,14 +152,4 @@ button#convertBtn:disabled {
   background: var(--bg);
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
-}
-
-footer {
-  margin-top: 2rem;
-  text-align: center;
-  font-size: 0.85rem;
-}
-
-footer a {
-  color: var(--accent);
 }
