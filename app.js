@@ -422,7 +422,11 @@ async function getOcrWorker(onLog) {
   if (!ocrWorker) {
     onLog("Cargando motor de OCR (español)...");
     ocrWorker = await Tesseract.createWorker("spa");
-    await ocrWorker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK });
+    // "single column" en vez de "single block": con SINGLE_BLOCK, Tesseract
+    // tiende a fusionar las dos columnas de la tabla de cabecera en una sola
+    // línea por fila, perdiendo la línea donde está "Página : X/Y" y haciendo
+    // que la página caiga al modo imagen aunque el formato sea reconocible.
+    await ocrWorker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_COLUMN });
   }
   return ocrWorker;
 }
@@ -454,9 +458,18 @@ async function convertPdf(file, pageRangeSpec, onLog) {
     }
 
     if (fields === null) {
+      onLog(`  ⚠ No se reconoció la cabecera en la página ${p} -> se insertó como imagen.`);
+      onLog(`  Texto OCR detectado en esa página:`);
+      const preview = text.trim() || "(vacío)";
+      const truncated = preview.length > 1000 ? preview.slice(0, 1000) + " …(truncado)" : preview;
+      for (const line of truncated.split("\n")) {
+        onLog(`    │ ${line}`);
+      }
       allChildren.push(await buildFullPageImage(canvas));
       continue;
     }
+
+    onLog(`  ✓ Cabecera reconocida (N° ${fields.numero}, página ${fields.pagina}).`);
 
     allChildren.push(buildHeaderTable(fields));
     allChildren.push(new Paragraph({ text: "" })); // espaciador
