@@ -122,7 +122,11 @@ RIGHT_LABELS = [
     ("referencia_corporativa", r"Referencia Corporativa"),
     ("elaborada_por", r"Elaborada por"),
     ("revisado_aprobado", r"Revisado y aprobado por"),
-    ("autorizado_por", r"Autorizado por el Gerente General"),
+    # Sin "General" al final: ese campo siempre queda en blanco en estos
+    # manuales, y el OCR a veces lee mal esa última palabra (p. ej. "General"
+    # -> "cabal"). "Autorizado por el Gerente" ya es una frase lo bastante
+    # específica para no matchear nada por accidente.
+    ("autorizado_por", r"Autorizado por el Gerente"),
 ]
 LEFT_LABELS = [
     ("area", r"[AÁ]rea"),
@@ -131,6 +135,15 @@ LEFT_LABELS = [
 ]
 ALL_LABELS = LEFT_LABELS + RIGHT_LABELS
 LABEL_RE = re.compile("|".join(f"(?P<{k}>{p})" for k, p in ALL_LABELS))
+LEFT_KEYS = {k for k, _ in LEFT_LABELS}
+
+
+def clean_value(s: str) -> str:
+    """Quita el '|' que a veces deja el OCR como ruido del borde de la
+    columna de la tabla (p. ej. 'Bono por Fallecimiento de |'), y normaliza
+    espacios repetidos que puedan quedar al quitarlo."""
+    s = s.replace("|", " ")
+    return re.sub(r"\s+", " ", s).strip()
 
 NUMERO_RE = re.compile(r"\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b")
 PAGINA_RE = re.compile(r"P[aá]gina[^\d]{0,40}(\d+\s*/\s*\d+)")
@@ -184,21 +197,43 @@ def parse_header(text: str):
         return None, text  # no se reconoce cabecera -> esta página va como imagen
 
     fields = {"numero": numero_match.group(1), "pagina": pagina_match.group(1).replace(" ", "")}
-    last_key = None
+    # Se rastrea la última etiqueta activa de cada columna por separado
+    # (izquierda: Área/Campo/Norma: derecha: Fecha/Reemplaza/Elaborada
+    # por/Autorizado...). El OCR a veces fusiona ambas columnas en una
+    # misma línea física (p. ej. "Norma : ... | Elaborada por : ..."), y
+    # cuando eso pasa, el texto de continuación de una columna (el título
+    # de "Norma" envuelto a varias líneas) puede terminar en una línea
+    # cuya única etiqueta reconocible es de la OTRA columna. En estos
+    # manuales, el único campo que se envuelve a varias líneas es "Norma"
+    # (columna izquierda), así que ese texto suelto se prioriza para la
+    # columna izquierda en vez de perderse o pegarse a la derecha.
+    last_left_key = None
+    last_right_key = None
     for ln in header_lines:
         matches = list(LABEL_RE.finditer(ln))
         if not matches:
-            if last_key:
-                fields[last_key] = (fields.get(last_key, "") + " " + ln.strip()).strip()
+            target = last_left_key or last_right_key
+            if target:
+                fields[target] = (fields.get(target, "") + " " + ln.strip()).strip()
             continue
+
+        first_start = matches[0].start()
+        if first_start > 0:
+            pre_text = ln[:first_start].strip()
+            target = last_left_key or last_right_key
+            if pre_text and target:
+                fields[target] = (fields.get(target, "") + " " + pre_text).strip()
+
         for idx, m in enumerate(matches):
             key = m.lastgroup
             val_start = m.end()
             val_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(ln)
-            value = ln[val_start:val_end]
-            value = re.sub(r"^[\s:]+", "", value).strip()
+            value = clean_value(ln[val_start:val_end].lstrip(" :"))
             fields[key] = (fields.get(key, "") + " " + value).strip() if key in fields and key not in ("area", "campo") else value
-            last_key = key
+            if key in LEFT_KEYS:
+                last_left_key = key
+            else:
+                last_right_key = key
 
     body_text = "\n".join(lines[body_start_idx:])
     return fields, body_text
@@ -216,6 +251,10 @@ BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*\+]\s+(.*)")
 # viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
 # oración), para no confundir la conjunción "e" ("madre e hija").
 BULLET_OCR_E_RE = re.compile(r"^\s*e\s+(?=[A-ZÁÉÍÓÚÑ])(.*)")
+# Título de sub-sección numerado sin ":" (p. ej. "1.- RUTINA", "2.- NO
+# RUTINA"). Se distingue de un paso numerado real (NUM_ITEM_RE) porque acá
+# el punto va seguido de un guión, no de un espacio.
+SECTION_NUM_HEADING_RE = re.compile(r"^\s*\d{1,2}\.-\s+.{1,60}$")
 
 # Ruido típico de capturas de un visor web (fecha/hora, migas de pan,
 # barra de usuario, pie con URL y contador de página) que se mete en el
@@ -244,9 +283,20 @@ def strip_noise(text: str) -> str:
 
 def is_heading_line(line: str) -> bool:
     """Título de sección corto, con mayúscula inicial y terminado en ':'
-    (p. ej. "RESPONSABLES:", "BASE LEGAL:", "CARACTERISTICAS:")."""
+    (p. ej. "RESPONSABLES:", "BASE LEGAL:", "CARACTERISTICAS:").
+    Se exige además que sean pocas palabras (<=4): los títulos reales de
+    este tipo de manuales son de 1-3 palabras, a diferencia de una
+    oración normal que también puede terminar en ':' antes de una lista
+    (p. ej. "El formato se distribuye como sigue:"), que no es un
+    título aunque cumpla lo demás."""
     line = line.strip()
-    return bool(line) and len(line) <= 45 and line.endswith(":") and line[:1].isupper()
+    return (
+        bool(line)
+        and len(line) <= 45
+        and len(line.split()) <= 4
+        and line.endswith(":")
+        and line[:1].isupper()
+    )
 
 
 def split_section(text, start_pat, end_pats):
@@ -363,7 +413,7 @@ def parse_steps(text):
         # ":" (p. ej. "CONTROLES:", "REMUNERACIONES:", "PAGOS:") es en sí
         # mismo una señal inequívoca de subtítulo en este tipo de manuales
         # -- no hace falta que además reinicie una lista en "1.".
-        if is_heading_line(line):
+        if is_heading_line(line) or SECTION_NUM_HEADING_RE.match(line):
             if current:
                 blocks.append(current)
                 current = None
@@ -373,6 +423,7 @@ def parse_steps(text):
 
         looks_like_heading = (
             len(line) <= 45
+            and len(line.split()) <= 4
             and not line.endswith((".", ",", ";"))
             and line[:1].isupper()
         )
