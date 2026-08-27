@@ -43,10 +43,22 @@ const RIGHT_LABELS = [
   ["referencia_corporativa", "Referencia Corporativa"],
   ["elaborada_por", "Elaborada por"],
   ["revisado_aprobado", "Revisado y aprobado por"],
-  ["autorizado_por", "Autorizado por el Gerente General"],
+  // Sin "General" al final: ese campo siempre queda en blanco en estos
+  // manuales, y el OCR a veces lee mal esa última palabra (p. ej.
+  // "General" -> "cabal"). "Autorizado por el Gerente" ya es lo bastante
+  // específico para no matchear nada por accidente.
+  ["autorizado_por", "Autorizado por el Gerente"],
 ];
 const ALL_LABELS = LEFT_LABELS.concat(RIGHT_LABELS);
 const LABEL_RE_SOURCE = ALL_LABELS.map(([k, p]) => `(?<${k}>${p})`).join("|");
+const LEFT_KEYS = new Set(LEFT_LABELS.map(([k]) => k));
+
+function cleanValue(s) {
+  // Quita el "|" que a veces deja el OCR como ruido del borde de la
+  // columna de la tabla (p. ej. "Bono por Fallecimiento de |"), y
+  // normaliza espacios repetidos que puedan quedar al quitarlo.
+  return s.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+}
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
 const PAGINA_RE = /P[aá]gina[^\d]{0,40}(\d+\s*\/\s*\d+)/;
@@ -105,15 +117,37 @@ function parseHeader(text) {
     pagina: paginaMatch[1].replace(/\s+/g, ""),
   };
 
-  let lastKey = null;
+  // Se rastrea la última etiqueta activa de cada columna por separado
+  // (izquierda: Área/Campo/Norma; derecha: Fecha/Reemplaza/Elaborada
+  // por/Autorizado...). El OCR a veces fusiona ambas columnas en una
+  // misma línea física (p. ej. "Norma : ... | Elaborada por : ..."), y
+  // cuando eso pasa, el texto de continuación de una columna (el título
+  // de "Norma" envuelto a varias líneas) puede terminar en una línea
+  // cuya única etiqueta reconocible es de la OTRA columna. En estos
+  // manuales, el único campo que se envuelve a varias líneas es "Norma"
+  // (columna izquierda), así que ese texto suelto se prioriza para la
+  // columna izquierda en vez de perderse o pegarse a la derecha.
+  let lastLeftKey = null;
+  let lastRightKey = null;
   for (const ln of headerLines) {
     const matches = [...ln.matchAll(new RegExp(LABEL_RE_SOURCE, "g"))];
     if (matches.length === 0) {
-      if (lastKey) {
-        fields[lastKey] = ((fields[lastKey] || "") + " " + ln.trim()).trim();
+      const target = lastLeftKey || lastRightKey;
+      if (target) {
+        fields[target] = ((fields[target] || "") + " " + ln.trim()).trim();
       }
       continue;
     }
+
+    const firstStart = matches[0].index;
+    if (firstStart > 0) {
+      const preText = ln.slice(0, firstStart).trim();
+      const target = lastLeftKey || lastRightKey;
+      if (preText && target) {
+        fields[target] = ((fields[target] || "") + " " + preText).trim();
+      }
+    }
+
     for (let idx = 0; idx < matches.length; idx++) {
       const m = matches[idx];
       let key = null;
@@ -122,14 +156,17 @@ function parseHeader(text) {
       }
       const valStart = m.index + m[0].length;
       const valEnd = idx + 1 < matches.length ? matches[idx + 1].index : ln.length;
-      let value = ln.slice(valStart, valEnd);
-      value = value.replace(/^[\s:]+/, "").trim();
+      let value = cleanValue(ln.slice(valStart, valEnd).replace(/^[\s:]+/, ""));
       if (key in fields && key !== "area" && key !== "campo") {
         fields[key] = ((fields[key] || "") + " " + value).trim();
       } else {
         fields[key] = value;
       }
-      lastKey = key;
+      if (LEFT_KEYS.has(key)) {
+        lastLeftKey = key;
+      } else {
+        lastRightKey = key;
+      }
     }
   }
 
@@ -149,6 +186,10 @@ const BULLET_ITEM_RE = /^\s*[•·\-*+]\s+(.*)/;
 // viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
 // oración), para no confundir la conjunción "e" ("madre e hija").
 const BULLET_OCR_E_RE = /^\s*e\s+(?=[A-ZÁÉÍÓÚÑ])(.*)/;
+// Título de sub-sección numerado sin ":" (p. ej. "1.- RUTINA", "2.- NO
+// RUTINA"). Se distingue de un paso numerado real (NUM_ITEM_RE) porque acá
+// el punto va seguido de un guión, no de un espacio.
+const SECTION_NUM_HEADING_RE = /^\s*\d{1,2}\.-\s+.{1,60}$/;
 
 // Ruido típico de capturas de un visor web (fecha/hora, migas de pan,
 // barra de usuario, pie con URL y contador de página) que se mete en el
@@ -176,11 +217,17 @@ function stripNoise(text) {
 
 function isHeadingLine(line) {
   // Título de sección corto, con mayúscula inicial y terminado en ":"
-  // (p. ej. "RESPONSABLES:", "BASE LEGAL:", "CARACTERISTICAS:").
+  // (p. ej. "RESPONSABLES:", "BASE LEGAL:", "CARACTERISTICAS:"). Se exige
+  // además que sean pocas palabras (<=4): los títulos reales de este tipo
+  // de manuales son de 1-3 palabras, a diferencia de una oración normal
+  // que también puede terminar en ":" antes de una lista (p. ej. "El
+  // formato se distribuye como sigue:"), que no es un título aunque
+  // cumpla lo demás.
   const trimmed = line.trim();
   return (
     trimmed.length > 0 &&
     trimmed.length <= 45 &&
+    trimmed.split(/\s+/).length <= 4 &&
     trimmed.endsWith(":") &&
     trimmed[0] === trimmed[0].toUpperCase() &&
     trimmed[0] !== trimmed[0].toLowerCase()
@@ -302,7 +349,7 @@ function parseSteps(text) {
     // (p. ej. "CONTROLES:", "REMUNERACIONES:", "PAGOS:") es en sí mismo una
     // señal inequívoca de subtítulo en este tipo de manuales -- no hace
     // falta que además reinicie una lista en "1.".
-    if (isHeadingLine(line)) {
+    if (isHeadingLine(line) || SECTION_NUM_HEADING_RE.test(line)) {
       if (current) { blocks.push(current); current = null; }
       blocks.push({ type: "subheading", text: line });
       i++; continue;
@@ -310,6 +357,7 @@ function parseSteps(text) {
 
     const looksLikeHeading =
       line.length <= 45 &&
+      line.split(/\s+/).length <= 4 &&
       !/[.,;]$/.test(line) &&
       line.length > 0 &&
       line[0] === line[0].toUpperCase() &&
