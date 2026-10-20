@@ -155,38 +155,44 @@ def parse_header(text: str):
     'PASOS A SEGUIR') y extrae sus campos. Devuelve (dict_o_None, resto_texto).
     """
     lines = text.splitlines()
-    body_start_idx = None
-    for i, ln in enumerate(lines):
-        if re.search(r"OBJETIVO\s*:", ln, re.I) or re.search(r"PASOS A SEGUIR", ln, re.I):
-            body_start_idx = i
+
+    # Marcador de inicio de cuerpo ("OBJETIVO(S):" / "PASOS A SEGUIR"),
+    # solo en MAYÚSCULAS (así están siempre los títulos de sección; buscarlo
+    # sin distinguir mayúsculas confundía "los pasos a seguir" dentro de una
+    # oración normal) y solo dentro de las primeras líneas: en una página de
+    # continuación puede aparecer un "OBJETIVOS:" a mitad de página (empieza
+    # un sub-procedimiento nuevo) y NO marca el fin de la cabecera.
+    marker_idx = None
+    for i, ln in enumerate(lines[:15]):
+        if re.search(r"OBJETIVOS?\s*:", ln) or re.search(r"PASOS A SEGUIR", ln):
+            marker_idx = i
             break
 
-    if body_start_idx is None:
-        # Página de continuación de un procedimiento de varias páginas: la
-        # cabecera se repite en cada página, pero "OBJETIVO:"/"PASOS A
-        # SEGUIR" solo aparecen en la primera. Antes, al no encontrar esos
-        # marcadores, se descartaba TODO el cuerpo de la página (quedaba
-        # solo la cabecera y el resto en blanco). En vez de eso, se ubica
-        # el final real de la cabecera: la última línea con alguna etiqueta
-        # fija, más alguna línea corta de continuación (valores envueltos
-        # a varias líneas, como "Norma" o "Autorizado por...").
-        last_label_idx = None
-        for i, ln in enumerate(lines[:15]):
-            if LABEL_RE.search(ln):
-                last_label_idx = i
-        if last_label_idx is None:
-            body_start_idx = min(10, len(lines))
-        else:
-            idx = last_label_idx + 1
-            while (
-                idx < len(lines)
-                and idx <= last_label_idx + 2
-                and lines[idx].strip()
-                and len(lines[idx].strip()) <= 50
-                and not NUM_ITEM_RE.match(lines[idx])
-            ):
-                idx += 1
-            body_start_idx = idx
+    # El fin real de la cabecera lo deciden las etiquetas fijas: la última
+    # línea con alguna etiqueta, más hasta 2 líneas cortas de continuación
+    # (valores envueltos a varias líneas, como "Norma" o "Autorizado por").
+    # Así, un título del cuerpo que venga justo después de la cabecera y
+    # antes de "OBJETIVOS:" (p. ej. "GASTOS DE CAPITAL") no se pega al
+    # campo "Norma". El marcador, si existe, solo actúa como tope.
+    last_label_idx = None
+    for i, ln in enumerate(lines[:15]):
+        if LABEL_RE.search(ln):
+            last_label_idx = i
+    if last_label_idx is None:
+        body_start_idx = marker_idx if marker_idx is not None else min(10, len(lines))
+    else:
+        idx = last_label_idx + 1
+        while (
+            idx < len(lines)
+            and idx <= last_label_idx + 2
+            and lines[idx].strip()
+            and len(lines[idx].strip()) <= 50
+            and not NUM_ITEM_RE.match(lines[idx])
+        ):
+            idx += 1
+        body_start_idx = idx
+        if marker_idx is not None:
+            body_start_idx = min(body_start_idx, marker_idx)
 
     header_lines = lines[:body_start_idx]
     header_text = "\n".join(header_lines)
@@ -245,7 +251,9 @@ def parse_header(text: str):
 
 NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})[.\)]\s+(.*)")
 LETTER_ITEM_RE = re.compile(r"^\s*([a-h])\)\s+(.*)")
-BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*\+]\s+(.*)")
+# Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
+# OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
+BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*\+=]\s+(.*)")
 # El glifo de viñeta (•), en algunos PDF/fuentes, el OCR lo confunde con una
 # "e" suelta (ambigüedad visual con el punto de la viñeta). Se trata como
 # viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
@@ -306,14 +314,18 @@ def split_section(text, start_pat, end_pats):
     "BASE LEGAL:" entre "OBJETIVO:" y "RESPONSABLES:") que de otro modo se
     perdería en silencio. Si no se encuentra `start_pat`, devuelve
     (None, None, text) sin consumir nada."""
-    m = re.search(start_pat, text, re.I)
+    # Los marcadores de sección se buscan anclados al inicio de línea y en
+    # MAYÚSCULAS (así aparecen siempre en estos manuales): buscarlos sin
+    # distinguir mayúsculas hacía que "los pasos a seguir" dentro de una
+    # oración normal cortara la sección "OBJETIVO" por la mitad.
+    m = re.search(start_pat, text, re.M)
     if not m:
-        return None, None, text
+        return None, None, text, None
     prefix = text[:m.start()]
     rest = text[m.end():]
     end_pos = len(rest)
     for ep in end_pats:
-        em = re.search(ep, rest, re.I)
+        em = re.search(ep, rest, re.M)
         if em and em.start() < end_pos:
             end_pos = em.start()
     # Además de los patrones explícitos (que solo cubren los nombres de
@@ -330,7 +342,15 @@ def split_section(text, start_pat, end_pats):
             end_pos = pos
             break
         pos += len(line)
-    return prefix, rest[:end_pos].strip(), rest[end_pos:]
+    return prefix, rest[:end_pos].strip(), rest[end_pos:], m.group(0).strip()
+
+
+def has_list_items(text: str) -> bool:
+    return any(
+        NUM_ITEM_RE.match(ln) or LETTER_ITEM_RE.match(ln)
+        or BULLET_ITEM_RE.match(ln) or BULLET_OCR_E_RE.match(ln)
+        for ln in text.splitlines()
+    )
 
 
 def parse_body(body_text: str):
@@ -341,16 +361,27 @@ def parse_body(body_text: str):
     blocks = []
     remaining = body_text
 
-    pre_objetivo, objetivo, remaining = split_section(
-        remaining, r"OBJETIVO\s*:", [r"RESPONSABLES\s*:", r"PASOS A SEGUIR", r"POL[IÍ]TICAS"]
+    pre_objetivo, objetivo, remaining, objetivo_marker = split_section(
+        remaining, r"^\s*OBJETIVOS?\s*:", [r"^\s*RESPONSABLES\s*:", r"^\s*PASOS A SEGUIR", r"^\s*POL[IÍ]TICAS"]
     )
     if pre_objetivo and pre_objetivo.strip():
         blocks.extend(parse_steps(pre_objetivo))
-    if objetivo:
-        blocks.append({"type": "objetivo", "text": clean_paragraph(objetivo)})
+    if objetivo_marker and not objetivo:
+        # El marcador está al final de la página y su contenido sigue en la
+        # siguiente: se conserva el título igual.
+        blocks.append({"type": "subheading", "text": objetivo_marker})
+    elif objetivo:
+        if has_list_items(objetivo):
+            # Algunos manuales ponen el objetivo como lista de viñetas (p. ej.
+            # bajo "OBJETIVOS:"): se conserva esa estructura en vez de
+            # aplastarla en un solo párrafo.
+            blocks.append({"type": "subheading", "text": objetivo_marker})
+            blocks.extend(parse_steps(objetivo))
+        else:
+            blocks.append({"type": "objetivo", "text": clean_paragraph(objetivo)})
 
-    pre_responsables, responsables, remaining = split_section(
-        remaining, r"RESPONSABLES\s*:", [r"PASOS A SEGUIR", r"POL[IÍ]TICAS"]
+    pre_responsables, responsables, remaining, _ = split_section(
+        remaining, r"^\s*RESPONSABLES\s*:", [r"^\s*PASOS A SEGUIR", r"^\s*POL[IÍ]TICAS"]
     )
     if pre_responsables and pre_responsables.strip():
         # Sección intermedia no prevista (p. ej. "BASE LEGAL:") entre
@@ -364,7 +395,7 @@ def parse_body(body_text: str):
     # Lo que sigue (o todo el texto, si esta página es una continuación
     # sin encabezados) se interpreta como la lista de pasos.
     steps_text = remaining
-    m = re.search(r"PASOS A SEGUIR\s*:?", steps_text, re.I)
+    m = re.search(r"^\s*PASOS A SEGUIR\s*:?", steps_text, re.M)
     if m:
         steps_text = steps_text[m.end():]
 
@@ -413,7 +444,10 @@ def parse_steps(text):
         # ":" (p. ej. "CONTROLES:", "REMUNERACIONES:", "PAGOS:") es en sí
         # mismo una señal inequívoca de subtítulo en este tipo de manuales
         # -- no hace falta que además reinicie una lista en "1.".
-        if is_heading_line(line) or SECTION_NUM_HEADING_RE.match(line):
+        # Una línea corta TODA en mayúsculas (p. ej. "DISPOSICIÓN Y CASTIGO DE
+        # LOS ACTIVOS") es título de sección aunque pase de 4 palabras.
+        all_caps_heading = len(line) <= 45 and line.isupper() and not line.endswith((".", ",", ";"))
+        if is_heading_line(line) or SECTION_NUM_HEADING_RE.match(line) or all_caps_heading:
             if current:
                 blocks.append(current)
                 current = None
