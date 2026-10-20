@@ -57,7 +57,7 @@ function cleanValue(s) {
   // Quita el "|" que a veces deja el OCR como ruido del borde de la
   // columna de la tabla (p. ej. "Bono por Fallecimiento de |"), y
   // normaliza espacios repetidos que puedan quedar al quitarlo.
-  return s.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+  return s.replace(/[|\[\]]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
@@ -319,7 +319,7 @@ function parseBody(bodyText) {
 
   let preObjetivo, objetivo, objetivoMarker;
   [preObjetivo, objetivo, remaining, objetivoMarker] = splitSection(
-    remaining, "^\\s*OBJETIVOS?\\s*:", ["^\\s*RESPONSABLES\\s*:", "^\\s*PASOS A SEGUIR", "^\\s*POL[IÍ]TICAS"]
+    remaining, "^\\s*OBJETIVOS?\\s*:", ["^\\s*RESPONSABLES?\\s*:", "^\\s*PASOS A SEGUIR", "^\\s*POL[IÍ]TICAS"]
   );
   if (preObjetivo && preObjetivo.trim()) blocks.push(...parseSteps(preObjetivo));
   if (objetivoMarker && !objetivo) {
@@ -340,7 +340,7 @@ function parseBody(bodyText) {
 
   let preResponsables, responsables;
   [preResponsables, responsables, remaining] = splitSection(
-    remaining, "^\\s*RESPONSABLES\\s*:", ["^\\s*PASOS A SEGUIR", "^\\s*POL[IÍ]TICAS"]
+    remaining, "^\\s*RESPONSABLES?\\s*:", ["^\\s*PASOS A SEGUIR", "^\\s*POL[IÍ]TICAS"]
   );
   if (preResponsables && preResponsables.trim()) {
     // Sección intermedia no prevista (p. ej. "BASE LEGAL:") entre
@@ -358,7 +358,15 @@ function parseBody(bodyText) {
 
   let stepsText = remaining;
   const m = /^\s*PASOS A SEGUIR\s*:?/m.exec(stepsText);
-  if (m) stepsText = stepsText.slice(m.index + m[0].length);
+  if (m) {
+    // Lo que haya entre la última sección reconocida y "PASOS A SEGUIR"
+    // (p. ej. un "RESPONSABLE:" con un nombre que no coincidió con el
+    // patrón esperado) se reconstruye con el parser genérico en vez de
+    // descartarse.
+    const before = stepsText.slice(0, m.index);
+    if (before.trim()) blocks.push(...parseSteps(before));
+    stepsText = stepsText.slice(m.index + m[0].length);
+  }
 
   blocks.push(...parseSteps(stepsText));
   return blocks;
