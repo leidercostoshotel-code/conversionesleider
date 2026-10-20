@@ -142,7 +142,7 @@ def clean_value(s: str) -> str:
     """Quita el '|' que a veces deja el OCR como ruido del borde de la
     columna de la tabla (p. ej. 'Bono por Fallecimiento de |'), y normaliza
     espacios repetidos que puedan quedar al quitarlo."""
-    s = s.replace("|", " ")
+    s = re.sub(r"[|\[\]]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 NUMERO_RE = re.compile(r"\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b")
@@ -382,7 +382,7 @@ def parse_body(body_text: str):
     remaining = body_text
 
     pre_objetivo, objetivo, remaining, objetivo_marker = split_section(
-        remaining, r"^\s*OBJETIVOS?\s*:", [r"^\s*RESPONSABLES\s*:", r"^\s*PASOS A SEGUIR", r"^\s*POL[IÍ]TICAS"]
+        remaining, r"^\s*OBJETIVOS?\s*:", [r"^\s*RESPONSABLES?\s*:", r"^\s*PASOS A SEGUIR", r"^\s*POL[IÍ]TICAS"]
     )
     if pre_objetivo and pre_objetivo.strip():
         blocks.extend(parse_steps(pre_objetivo))
@@ -401,7 +401,7 @@ def parse_body(body_text: str):
             blocks.append({"type": "objetivo", "text": clean_paragraph(objetivo)})
 
     pre_responsables, responsables, remaining, _ = split_section(
-        remaining, r"^\s*RESPONSABLES\s*:", [r"^\s*PASOS A SEGUIR", r"^\s*POL[IÍ]TICAS"]
+        remaining, r"^\s*RESPONSABLES?\s*:", [r"^\s*PASOS A SEGUIR", r"^\s*POL[IÍ]TICAS"]
     )
     if pre_responsables and pre_responsables.strip():
         # Sección intermedia no prevista (p. ej. "BASE LEGAL:") entre
@@ -417,6 +417,13 @@ def parse_body(body_text: str):
     steps_text = remaining
     m = re.search(r"^\s*PASOS A SEGUIR\s*:?", steps_text, re.M)
     if m:
+        # Lo que haya entre la última sección reconocida y "PASOS A SEGUIR"
+        # (p. ej. un "RESPONSABLE:" con un nombre que no coincidió con el
+        # patrón esperado) se reconstruye con el parser genérico en vez de
+        # descartarse.
+        before = steps_text[:m.start()]
+        if before.strip():
+            blocks.extend(parse_steps(before))
         steps_text = steps_text[m.end():]
 
     blocks.extend(parse_steps(steps_text))
