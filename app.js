@@ -65,42 +65,47 @@ const PAGINA_RE = /P[aá]gina[^\d]{0,40}(\d+\s*\/\s*\d+)/;
 
 function parseHeader(text) {
   const lines = text.split("\n");
-  let bodyStartIdx = null;
-  for (let i = 0; i < lines.length; i++) {
-    if (/OBJETIVO\s*:/i.test(lines[i]) || /PASOS A SEGUIR/i.test(lines[i])) {
-      bodyStartIdx = i;
+
+  // Marcador de inicio de cuerpo ("OBJETIVO(S):" / "PASOS A SEGUIR"), solo
+  // en MAYÚSCULAS (así están siempre los títulos de sección; buscarlo sin
+  // distinguir mayúsculas confundía "los pasos a seguir" dentro de una
+  // oración normal) y solo dentro de las primeras líneas: en una página de
+  // continuación puede aparecer un "OBJETIVOS:" a mitad de página (empieza
+  // un sub-procedimiento nuevo) y NO marca el fin de la cabecera.
+  let markerIdx = null;
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    if (/OBJETIVOS?\s*:/.test(lines[i]) || /PASOS A SEGUIR/.test(lines[i])) {
+      markerIdx = i;
       break;
     }
   }
 
-  if (bodyStartIdx === null) {
-    // Página de continuación de un procedimiento de varias páginas: la
-    // cabecera se repite en cada página, pero "OBJETIVO:"/"PASOS A SEGUIR"
-    // solo aparecen en la primera. Antes, al no encontrar esos marcadores,
-    // se descartaba TODO el cuerpo de la página (quedaba solo la cabecera
-    // y el resto en blanco). En vez de eso, se ubica el final real de la
-    // cabecera: la última línea con alguna etiqueta fija, más alguna línea
-    // corta de continuación (valores envueltos a varias líneas, como
-    // "Norma" o "Autorizado por...").
-    let lastLabelIdx = null;
-    for (let i = 0; i < Math.min(lines.length, 15); i++) {
-      if (new RegExp(LABEL_RE_SOURCE).test(lines[i])) lastLabelIdx = i;
+  // El fin real de la cabecera lo deciden las etiquetas fijas: la última
+  // línea con alguna etiqueta, más hasta 2 líneas cortas de continuación
+  // (valores envueltos a varias líneas, como "Norma" o "Autorizado por").
+  // Así, un título del cuerpo que venga justo después de la cabecera y
+  // antes de "OBJETIVOS:" (p. ej. "GASTOS DE CAPITAL") no se pega al campo
+  // "Norma". El marcador, si existe, solo actúa como tope.
+  let lastLabelIdx = null;
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    if (new RegExp(LABEL_RE_SOURCE).test(lines[i])) lastLabelIdx = i;
+  }
+  let bodyStartIdx;
+  if (lastLabelIdx === null) {
+    bodyStartIdx = markerIdx !== null ? markerIdx : Math.min(10, lines.length);
+  } else {
+    let idx = lastLabelIdx + 1;
+    while (
+      idx < lines.length &&
+      idx <= lastLabelIdx + 2 &&
+      lines[idx].trim() &&
+      lines[idx].trim().length <= 50 &&
+      !NUM_ITEM_RE.test(lines[idx])
+    ) {
+      idx++;
     }
-    if (lastLabelIdx === null) {
-      bodyStartIdx = Math.min(10, lines.length);
-    } else {
-      let idx = lastLabelIdx + 1;
-      while (
-        idx < lines.length &&
-        idx <= lastLabelIdx + 2 &&
-        lines[idx].trim() &&
-        lines[idx].trim().length <= 50 &&
-        !NUM_ITEM_RE.test(lines[idx])
-      ) {
-        idx++;
-      }
-      bodyStartIdx = idx;
-    }
+    bodyStartIdx = idx;
+    if (markerIdx !== null) bodyStartIdx = Math.min(bodyStartIdx, markerIdx);
   }
 
   const headerLines = lines.slice(0, bodyStartIdx);
@@ -180,7 +185,9 @@ function parseHeader(text) {
 
 const NUM_ITEM_RE = /^\s*(\d{1,2})[.)]\s+(.*)/;
 const LETTER_ITEM_RE = /^\s*([a-h])\)\s+(.*)/;
-const BULLET_ITEM_RE = /^\s*[•·\-*+]\s+(.*)/;
+// Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
+// OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
+const BULLET_ITEM_RE = /^\s*[•·\-*+=]\s+(.*)/;
 // El glifo de viñeta (•), en algunos PDF/fuentes, el OCR lo confunde con una
 // "e" suelta (ambigüedad visual con el punto de la viñeta). Se trata como
 // viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
@@ -240,14 +247,20 @@ function splitSection(text, startPat, endPats) {
   // vacío, salvo cuando hay una sección intermedia no prevista (p. ej.
   // "BASE LEGAL:" entre "OBJETIVO:" y "RESPONSABLES:") que de otro modo se
   // perdería en silencio. Si no se encuentra `startPat`, devuelve
-  // [null, null, text] sin consumir nada.
-  const m = new RegExp(startPat, "i").exec(text);
-  if (!m) return [null, null, text];
+  // [null, null, text, null] sin consumir nada. El cuarto valor es el texto
+  // del marcador tal como se encontró (p. ej. "OBJETIVOS:").
+  //
+  // Los marcadores se buscan anclados al inicio de línea y en MAYÚSCULAS
+  // (así aparecen siempre en estos manuales): buscarlos sin distinguir
+  // mayúsculas hacía que "los pasos a seguir" dentro de una oración normal
+  // cortara la sección "OBJETIVO" por la mitad.
+  const m = new RegExp(startPat, "m").exec(text);
+  if (!m) return [null, null, text, null];
   const prefix = text.slice(0, m.index);
   const rest = text.slice(m.index + m[0].length);
   let endPos = rest.length;
   for (const ep of endPats) {
-    const em = new RegExp(ep, "i").exec(rest);
+    const em = new RegExp(ep, "m").exec(rest);
     if (em && em.index < endPos) endPos = em.index;
   }
   // Además de los patrones explícitos (que solo cubren los nombres de
@@ -265,7 +278,14 @@ function splitSection(text, startPat, endPats) {
     }
     pos += line.length + 1; // +1 por el "\n" separador
   }
-  return [prefix, rest.slice(0, endPos).trim(), rest.slice(endPos)];
+  return [prefix, rest.slice(0, endPos).trim(), rest.slice(endPos), m[0].trim()];
+}
+
+function hasListItems(text) {
+  return text.split("\n").some((ln) =>
+    NUM_ITEM_RE.test(ln) || LETTER_ITEM_RE.test(ln) ||
+    BULLET_ITEM_RE.test(ln) || BULLET_OCR_E_RE.test(ln)
+  );
 }
 
 function cleanParagraph(text) {
@@ -282,16 +302,30 @@ function parseBody(bodyText) {
   const blocks = [];
   let remaining = bodyText;
 
-  let preObjetivo, objetivo;
-  [preObjetivo, objetivo, remaining] = splitSection(
-    remaining, "OBJETIVO\\s*:", ["RESPONSABLES\\s*:", "PASOS A SEGUIR", "POL[IÍ]TICAS"]
+  let preObjetivo, objetivo, objetivoMarker;
+  [preObjetivo, objetivo, remaining, objetivoMarker] = splitSection(
+    remaining, "^\\s*OBJETIVOS?\\s*:", ["^\\s*RESPONSABLES\\s*:", "^\\s*PASOS A SEGUIR", "^\\s*POL[IÍ]TICAS"]
   );
   if (preObjetivo && preObjetivo.trim()) blocks.push(...parseSteps(preObjetivo));
-  if (objetivo) blocks.push({ type: "objetivo", text: cleanParagraph(objetivo) });
+  if (objetivoMarker && !objetivo) {
+    // El marcador está al final de la página y su contenido sigue en la
+    // siguiente: se conserva el título igual.
+    blocks.push({ type: "subheading", text: objetivoMarker });
+  } else if (objetivo) {
+    if (hasListItems(objetivo)) {
+      // Algunos manuales ponen el objetivo como lista de viñetas (p. ej.
+      // bajo "OBJETIVOS:"): se conserva esa estructura en vez de
+      // aplastarla en un solo párrafo.
+      blocks.push({ type: "subheading", text: objetivoMarker });
+      blocks.push(...parseSteps(objetivo));
+    } else {
+      blocks.push({ type: "objetivo", text: cleanParagraph(objetivo) });
+    }
+  }
 
   let preResponsables, responsables;
   [preResponsables, responsables, remaining] = splitSection(
-    remaining, "RESPONSABLES\\s*:", ["PASOS A SEGUIR", "POL[IÍ]TICAS"]
+    remaining, "^\\s*RESPONSABLES\\s*:", ["^\\s*PASOS A SEGUIR", "^\\s*POL[IÍ]TICAS"]
   );
   if (preResponsables && preResponsables.trim()) {
     // Sección intermedia no prevista (p. ej. "BASE LEGAL:") entre
@@ -308,7 +342,7 @@ function parseBody(bodyText) {
   }
 
   let stepsText = remaining;
-  const m = /PASOS A SEGUIR\s*:?/i.exec(stepsText);
+  const m = /^\s*PASOS A SEGUIR\s*:?/m.exec(stepsText);
   if (m) stepsText = stepsText.slice(m.index + m[0].length);
 
   blocks.push(...parseSteps(stepsText));
@@ -349,7 +383,14 @@ function parseSteps(text) {
     // (p. ej. "CONTROLES:", "REMUNERACIONES:", "PAGOS:") es en sí mismo una
     // señal inequívoca de subtítulo en este tipo de manuales -- no hace
     // falta que además reinicie una lista en "1.".
-    if (isHeadingLine(line) || SECTION_NUM_HEADING_RE.test(line)) {
+    // Una línea corta TODA en mayúsculas (p. ej. "DISPOSICIÓN Y CASTIGO DE
+    // LOS ACTIVOS") es título de sección aunque pase de 4 palabras.
+    const allCapsHeading =
+      line.length <= 45 &&
+      line === line.toUpperCase() &&
+      line !== line.toLowerCase() &&
+      !/[.,;]$/.test(line);
+    if (isHeadingLine(line) || SECTION_NUM_HEADING_RE.test(line) || allCapsHeading) {
       if (current) { blocks.push(current); current = null; }
       blocks.push({ type: "subheading", text: line });
       i++; continue;
