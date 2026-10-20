@@ -146,7 +146,25 @@ def clean_value(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 NUMERO_RE = re.compile(r"\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b")
-PAGINA_RE = re.compile(r"P[aá]gina[^\d]{0,40}(\d+\s*/\s*\d+)")
+# La barra de "2/3" es opcional: Tesseract.js (el motor del navegador) a
+# veces se la come y lee "Página : 23". Como va justo detrás de la etiqueta
+# "Página", esos dígitos pegados son casi seguro "página/total"; ver
+# normalizar_pagina().
+PAGINA_RE = re.compile(r"P[aá]gina[^\d]{0,40}(\d{1,2}\s*[/\\|]?\s*\d{1,2})")
+
+
+def normalizar_pagina(raw: str) -> str:
+    s = re.sub(r"\s+", "", raw).replace("\\", "/").replace("|", "/")
+    if "/" in s:
+        return s
+    # Sin separador: "23" -> "2/3", "110" -> "1/10", "1013" -> "10/13".
+    if len(s) == 2:
+        return f"{s[0]}/{s[1]}"
+    if len(s) == 3:
+        return f"{s[0]}/{s[1:]}"
+    if len(s) == 4:
+        return f"{s[:2]}/{s[2:]}"
+    return s
 
 
 def parse_header(text: str):
@@ -202,7 +220,7 @@ def parse_header(text: str):
     if not numero_match or not pagina_match:
         return None, text  # no se reconoce cabecera -> esta página va como imagen
 
-    fields = {"numero": numero_match.group(1), "pagina": pagina_match.group(1).replace(" ", "")}
+    fields = {"numero": numero_match.group(1), "pagina": normalizar_pagina(pagina_match.group(1))}
     # Se rastrea la última etiqueta activa de cada columna por separado
     # (izquierda: Área/Campo/Norma: derecha: Fecha/Reemplaza/Elaborada
     # por/Autorizado...). El OCR a veces fusiona ambas columnas en una
@@ -234,7 +252,9 @@ def parse_header(text: str):
             key = m.lastgroup
             val_start = m.end()
             val_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(ln)
-            value = clean_value(ln[val_start:val_end].lstrip(" :"))
+            # También se quita un guión inicial: el OCR del navegador a veces
+            # lee el ":" de la tabla como "-" ("Elaborada por - GPL").
+            value = clean_value(ln[val_start:val_end].lstrip(" :-–—"))
             fields[key] = (fields.get(key, "") + " " + value).strip() if key in fields and key not in ("area", "campo") else value
             if key in LEFT_KEYS:
                 last_left_key = key

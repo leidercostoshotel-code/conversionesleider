@@ -61,7 +61,20 @@ function cleanValue(s) {
 }
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
-const PAGINA_RE = /P[aá]gina[^\d]{0,40}(\d+\s*\/\s*\d+)/;
+// La barra de "2/3" es opcional: Tesseract.js a veces se la come y lee
+// "Página : 23". Como va justo detrás de la etiqueta "Página", esos dígitos
+// pegados son casi seguro "página/total"; ver normalizarPagina().
+const PAGINA_RE = /P[aá]gina[^\d]{0,40}(\d{1,2}\s*[/\\|]?\s*\d{1,2})/;
+
+function normalizarPagina(raw) {
+  const s = raw.replace(/\s+/g, "").replace(/[\\|]/g, "/");
+  if (s.includes("/")) return s;
+  // Sin separador: "23" -> "2/3", "110" -> "1/10", "1013" -> "10/13".
+  if (s.length === 2) return `${s[0]}/${s[1]}`;
+  if (s.length === 3) return `${s[0]}/${s.slice(1)}`;
+  if (s.length === 4) return `${s.slice(0, 2)}/${s.slice(2)}`;
+  return s;
+}
 
 function parseHeader(text) {
   const lines = text.split("\n");
@@ -119,7 +132,7 @@ function parseHeader(text) {
 
   const fields = {
     numero: numeroMatch[1],
-    pagina: paginaMatch[1].replace(/\s+/g, ""),
+    pagina: normalizarPagina(paginaMatch[1]),
   };
 
   // Se rastrea la última etiqueta activa de cada columna por separado
@@ -161,7 +174,9 @@ function parseHeader(text) {
       }
       const valStart = m.index + m[0].length;
       const valEnd = idx + 1 < matches.length ? matches[idx + 1].index : ln.length;
-      let value = cleanValue(ln.slice(valStart, valEnd).replace(/^[\s:]+/, ""));
+      // También se quita un guión inicial: el OCR del navegador a veces lee
+      // el ":" de la tabla como "-" ("Elaborada por - GPL").
+      let value = cleanValue(ln.slice(valStart, valEnd).replace(/^[\s:\-–—]+/, ""));
       if (key in fields && key !== "area" && key !== "campo") {
         fields[key] = ((fields[key] || "") + " " + value).trim();
       } else {
