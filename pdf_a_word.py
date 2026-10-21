@@ -60,6 +60,7 @@ sigue siendo seguro (no pierde contenido), solo que no queda editable.
 
 import argparse
 import re
+from datetime import date
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,17 @@ from PIL import Image
 
 FONT = "Arial"
 DPI = 300
+
+# Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
+# que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
+# la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
+# y el Sub Contralor es siempre el primer responsable.
+ELABORADA_POR_FIJO = "GPL/JACH"
+RESPONSABLE_FIJO = "Sub Contralor"
+
+
+def fecha_de_hoy() -> str:
+    return date.today().strftime("%d.%m.%Y")
 
 # ------------------------------------------------------------------ #
 # 1. PDF -> imágenes, imagen -> texto (OCR)
@@ -136,6 +148,16 @@ LEFT_LABELS = [
 ALL_LABELS = LEFT_LABELS + RIGHT_LABELS
 LABEL_RE = re.compile("|".join(f"(?P<{k}>{p})" for k, p in ALL_LABELS))
 LEFT_KEYS = {k for k, _ in LEFT_LABELS}
+# Fila de la tabla de cabecera a la que pertenece cada etiqueta de la
+# derecha -> campo de la izquierda de esa misma fila. Sirve cuando el OCR se
+# come la etiqueta izquierda ("Area :", "Campo :", "Norma :") y solo queda su
+# valor suelto delante de la etiqueta derecha.
+ROW_LEFT_KEY = {
+    "fecha_elaboracion": "area",
+    "reemplaza": "campo",
+    "elaborada_por": "norma_titulo",
+    "autorizado_por": "norma_titulo",
+}
 
 
 def clean_value(s: str) -> str:
@@ -143,6 +165,7 @@ def clean_value(s: str) -> str:
     columna de la tabla (p. ej. 'Bono por Fallecimiento de |'), y normaliza
     espacios repetidos que puedan quedar al quitarlo."""
     s = re.sub(r"[|\[\]]", " ", s)
+    s = re.sub(r"[\s\-–—]+$", "", s)  # guiones sueltos del borde de columna
     return re.sub(r"\s+", " ", s).strip()
 
 NUMERO_RE = re.compile(r"\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b")
@@ -243,10 +266,20 @@ def parse_header(text: str):
 
         first_start = matches[0].start()
         if first_start > 0:
-            pre_text = ln[:first_start].strip()
-            target = last_left_key or last_right_key
-            if pre_text and target:
-                fields[target] = (fields.get(target, "") + " " + pre_text).strip()
+            pre_text = clean_value(re.sub(r"^[\s:\-–—]+", "", ln[:first_start]))
+            row_left = ROW_LEFT_KEY.get(matches[0].lastgroup)
+            if pre_text and row_left and not fields.get(row_left):
+                # La etiqueta izquierda se perdió en el OCR (con el render de
+                # pdf.js, Tesseract omite "Area :" y deja solo
+                # "- Contraloría Fecha de elaboración - 14.03.15"): el texto
+                # previo a la etiqueta derecha es el valor izquierdo de esa
+                # misma fila de la tabla.
+                fields[row_left] = pre_text
+                last_left_key = row_left
+            else:
+                target = last_left_key or last_right_key
+                if pre_text and target:
+                    fields[target] = (fields.get(target, "") + " " + pre_text).strip()
 
         for idx, m in enumerate(matches):
             key = m.lastgroup
@@ -573,6 +606,7 @@ def add_header_table(doc, f):
         add_run(p, f"{label} : {f.get(key, '')}", size=9)
 
     c = table.cell(1, 1)
+    f = dict(f, reemplaza=fecha_de_hoy(), elaborada_por=ELABORADA_POR_FIJO)
     right_fields = [
         ("fecha_elaboracion", "Fecha de elaboración"),
         ("reemplaza", "Reemplaza a la norma del"),
@@ -616,7 +650,8 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            for name in b["names"]:
+            otros = [n for n in b["names"] if n.strip().lower() != RESPONSABLE_FIJO.lower()]
+            for name in [RESPONSABLE_FIJO] + otros:
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)

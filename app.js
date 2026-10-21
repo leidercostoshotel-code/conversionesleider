@@ -23,6 +23,20 @@ const {
 
 const FONT = "Arial";
 const DPI = 300;
+
+// Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
+// que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
+// la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
+// y el Sub Contralor es siempre el primer responsable.
+const ELABORADA_POR_FIJO = "GPL/JACH";
+const RESPONSABLE_FIJO = "Sub Contralor";
+
+function fechaDeHoy() {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}.${mm}.${d.getFullYear()}`;
+}
 const A4_WIDTH_TWIPS = 11906;
 const A4_HEIGHT_TWIPS = 16838;
 const MARGIN_TWIPS = 700;
@@ -52,12 +66,29 @@ const RIGHT_LABELS = [
 const ALL_LABELS = LEFT_LABELS.concat(RIGHT_LABELS);
 const LABEL_RE_SOURCE = ALL_LABELS.map(([k, p]) => `(?<${k}>${p})`).join("|");
 const LEFT_KEYS = new Set(LEFT_LABELS.map(([k]) => k));
+// Fila de la tabla de cabecera a la que pertenece cada etiqueta de la
+// derecha -> campo de la izquierda de esa misma fila. Sirve cuando el OCR se
+// come la etiqueta izquierda ("Area :", "Campo :", "Norma :") y solo queda su
+// valor suelto delante de la etiqueta derecha.
+const ROW_LEFT_KEY = {
+  fecha_elaboracion: "area",
+  reemplaza: "campo",
+  elaborada_por: "norma_titulo",
+  autorizado_por: "norma_titulo",
+};
+
+function matchKey(m) {
+  for (const gk of Object.keys(m.groups || {})) {
+    if (m.groups[gk] !== undefined) return gk;
+  }
+  return null;
+}
 
 function cleanValue(s) {
   // Quita el "|" que a veces deja el OCR como ruido del borde de la
   // columna de la tabla (p. ej. "Bono por Fallecimiento de |"), y
   // normaliza espacios repetidos que puedan quedar al quitarlo.
-  return s.replace(/[|\[\]]/g, " ").replace(/\s+/g, " ").trim();
+  return s.replace(/[|\[\]]/g, " ").replace(/[\s\-–—]+$/, "").replace(/\s+/g, " ").trim();
 }
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
@@ -159,10 +190,20 @@ function parseHeader(text) {
 
     const firstStart = matches[0].index;
     if (firstStart > 0) {
-      const preText = ln.slice(0, firstStart).trim();
-      const target = lastLeftKey || lastRightKey;
-      if (preText && target) {
-        fields[target] = ((fields[target] || "") + " " + preText).trim();
+      const preText = cleanValue(ln.slice(0, firstStart).replace(/^[\s:\-–—]+/, ""));
+      const rowLeft = ROW_LEFT_KEY[matchKey(matches[0])];
+      if (preText && rowLeft && !fields[rowLeft]) {
+        // La etiqueta izquierda se perdió en el OCR (con el render de pdf.js,
+        // Tesseract omite "Area :" y deja solo
+        // "- Contraloría Fecha de elaboración - 14.03.15"): el texto previo a
+        // la etiqueta derecha es el valor izquierdo de esa misma fila.
+        fields[rowLeft] = preText;
+        lastLeftKey = rowLeft;
+      } else {
+        const target = lastLeftKey || lastRightKey;
+        if (preText && target) {
+          fields[target] = ((fields[target] || "") + " " + preText).trim();
+        }
       }
     }
 
@@ -505,6 +546,7 @@ function buildHeaderTable(f) {
     children: cell10Children,
   });
 
+  f = { ...f, reemplaza: fechaDeHoy(), elaborada_por: ELABORADA_POR_FIJO };
   const rightFieldsDef = [
     ["fecha_elaboracion", "Fecha de elaboración"],
     ["reemplaza", "Reemplaza a la norma del"],
@@ -545,7 +587,10 @@ function buildContentBox(blocks) {
         break;
       case "responsables":
         children.push(makeParagraph("RESPONSABLES:", { bold: true }));
-        for (const name of b.names) children.push(makeParagraph(name));
+        {
+          const otros = b.names.filter((n) => n.trim().toLowerCase() !== RESPONSABLE_FIJO.toLowerCase());
+          for (const name of [RESPONSABLE_FIJO, ...otros]) children.push(makeParagraph(name));
+        }
         break;
       case "subheading":
         children.push(makeParagraph(b.text, { bold: true }));
