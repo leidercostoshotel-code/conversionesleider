@@ -169,11 +169,22 @@ def clean_value(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 NUMERO_RE = re.compile(r"\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b")
+# El N° también viene en el nombre del archivo ("SPI 04.01.13.02 Despacho...").
+# Ese valor es exacto, mientras que el OCR a veces cambia el último dígito,
+# así que cuando está en el nombre manda sobre lo leído de la imagen.
+FILENAME_NUM_RE = re.compile(r"(?<!\d)(\d{2}\.\d{2}(?:\.\d{2}){0,2})(?!\d)")
+
+
+def numero_desde_nombre(nombre):
+    m = FILENAME_NUM_RE.search(nombre or "")
+    return m.group(1) if m else None
 # La barra de "2/3" es opcional: Tesseract.js (el motor del navegador) a
 # veces se la come y lee "Página : 23". Como va justo detrás de la etiqueta
 # "Página", esos dígitos pegados son casi seguro "página/total"; ver
 # normalizar_pagina().
-PAGINA_RE = re.compile(r"P[aá]gina[^\d]{0,40}(\d{1,2}\s*[/\\|]?\s*\d{1,2})")
+# "P?" porque con el render de pdf.js Tesseract a veces se come la "P"
+# inicial y lee "agina: 1/1".
+PAGINA_RE = re.compile(r"P?[aáé]gina[^\d]{0,40}(\d{1,2}\s*[/\\|]?\s*\d{1,2})")
 
 
 def normalizar_pagina(raw: str) -> str:
@@ -294,6 +305,11 @@ def parse_header(text: str):
             else:
                 last_right_key = key
 
+    # Fecha sin puntos ("160412"): el OCR a veces se come los separadores.
+    fe = fields.get("fecha_elaboracion", "")
+    if re.fullmatch(r"\d{6}", fe):
+        fields["fecha_elaboracion"] = f"{fe[:2]}.{fe[2:4]}.{fe[4:]}"
+
     body_text = "\n".join(lines[body_start_idx:])
     return fields, body_text
 
@@ -306,7 +322,8 @@ NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})[.\)]\s+(.*)")
 LETTER_ITEM_RE = re.compile(r"^\s*([a-h])\)\s+(.*)")
 # Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
 # OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
-BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*\+=]\s+(.*)")
+# El "." al inicio también cuenta: es como el navegador suele leer la viñeta.
+BULLET_ITEM_RE = re.compile(r"^\s*[•·\-\*\+=.]\s+(.*)")
 # El glifo de viñeta (•), en algunos PDF/fuentes, el OCR lo confunde con una
 # "e" suelta (ambigüedad visual con el punto de la viñeta). Se trata como
 # viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
@@ -331,7 +348,19 @@ NOISE_LINE_PATTERNS = [
     r"—\s*Intranet\s*$",
     r"^\s*[←<]\s*\w+\s*[-–—]?\s*\d{0,3}%?\s*[-+]?\s*$",
     r"^\s*P[aá]g\.?\s*\d+\s*$",
+    r"Documento de uso interno",
 ]
+
+
+def is_garbage_line(line: str) -> bool:
+    """Línea de "basura" del OCR: el navegador convierte las franjas grises
+    de la intranet en ristras como "ITTiaIl ol iTíimig1aíditGi". En ellas
+    más de la mitad de las letras son palos verticales (I, l, i, T, 1, í, Í)."""
+    letters = [c for c in line if c.isalnum()]
+    if len(letters) < 8:
+        return False
+    palos = sum(1 for c in letters if c in "IliTt1íÍ|")
+    return palos / len(letters) > 0.5
 
 
 def strip_noise(text: str) -> str:
@@ -339,6 +368,7 @@ def strip_noise(text: str) -> str:
         text = re.sub(pat, " ", text)
     lines = text.splitlines()
     lines = [ln for ln in lines if not any(re.search(p, ln, re.I) for p in NOISE_LINE_PATTERNS)]
+    lines = [ln for ln in lines if not is_garbage_line(ln)]
     return "\n".join(lines)
 
 
@@ -457,6 +487,8 @@ def parse_body(body_text: str):
         before = steps_text[:m.start()]
         if before.strip():
             blocks.extend(parse_steps(before))
+        # El título "PASOS A SEGUIR:" también va al Word, como en el PDF.
+        blocks.append({"type": "subheading", "text": "PASOS A SEGUIR:"})
         steps_text = steps_text[m.end():]
 
     blocks.extend(parse_steps(steps_text))
@@ -469,18 +501,33 @@ def clean_paragraph(text):
 
 
 def parse_steps(text):
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # Se conserva si cada línea venía precedida de una línea en blanco:
+    # el OCR separa los párrafos/ítems con un renglón vacío, y esa es la
+    # única pista que queda cuando el navegador se come las viñetas.
+    lines, blank_before = [], []
+    pending_blank = False
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if not ln:
+            pending_blank = True
+            continue
+        lines.append(ln)
+        blank_before.append(pending_blank)
+        pending_blank = False
     blocks = []
     current = None
+    prev_len = 0  # largo de la última línea física procesada
     i = 0
     while i < len(lines):
         line = lines[i]
+        this_len = len(line)
 
         m = NUM_ITEM_RE.match(line)
         if m:
             if current:
                 blocks.append(current)
             current = {"type": "numbered", "n": m.group(1), "text": m.group(2).strip()}
+            prev_len = this_len
             i += 1
             continue
 
@@ -489,6 +536,7 @@ def parse_steps(text):
             if current:
                 blocks.append(current)
             current = {"type": "letter", "letter": m.group(1), "text": m.group(2).strip()}
+            prev_len = this_len
             i += 1
             continue
 
@@ -497,6 +545,7 @@ def parse_steps(text):
             if current:
                 blocks.append(current)
             current = {"type": "bullet", "text": m.group(1).strip()}
+            prev_len = this_len
             i += 1
             continue
 
@@ -512,6 +561,7 @@ def parse_steps(text):
                 blocks.append(current)
                 current = None
             blocks.append({"type": "subheading", "text": line})
+            prev_len = this_len
             i += 1
             continue
 
@@ -534,17 +584,37 @@ def parse_steps(text):
                 blocks.append(current)
                 current = None
             blocks.append({"type": "subheading", "text": line})
+            prev_len = this_len
             i += 1
             continue
 
-        if current:
+        # Con el render del navegador, el OCR a veces se come por completo
+        # los glifos de viñeta y los ítems llegan sin marcador. Dentro de
+        # un párrafo genérico, una línea que empieza en mayúscula justo
+        # después de una que terminó en ".", ":" o ";" es un ítem nuevo,
+        # no la continuación envuelta del anterior.
+        # También es ítem nuevo si venía separado por una línea en blanco
+        # o si la línea anterior era corta (una línea envuelta ocupa casi
+        # todo el ancho; una corta es el final de su párrafo).
+        nuevo_item = (
+            current is not None
+            and line[:1].isupper()
+            and (
+                (current["type"] == "paragraph" and re.search(r"[.:;]$", current["text"]) is not None)
+                or (current["type"] in ("paragraph", "bullet") and (blank_before[i] or prev_len < 50))
+            )
+        )
+        if current and not nuevo_item:
             current["text"] = (current["text"] + " " + line).strip()
         else:
+            if current:
+                blocks.append(current)
             # OJO: se deja `current` apuntando a este párrafo (no se hace
             # append todavía) para que la siguiente línea, si es una
             # continuación envuelta del mismo párrafo, se una aquí en vez
             # de crear un bloque nuevo por cada línea física del OCR.
             current = {"type": "paragraph", "text": line}
+        prev_len = this_len
         i += 1
 
     if current:
@@ -705,6 +775,7 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
             print(f"  ! No se pudo rasterizar {pdf_path.name}", file=sys.stderr)
             return
 
+        numero_archivo = numero_desde_nombre(pdf_path.name)
         doc = Document()
         section = doc.sections[0]
         section.page_width, section.page_height = Twips(11906), Twips(16838)  # A4
@@ -717,6 +788,8 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
             text = ocr_page(img_path)
             text = strip_noise(text)
             fields, body_text = parse_header(text)
+            if fields is not None and numero_archivo:
+                fields["numero"] = numero_archivo
 
             if i > 0:
                 add_page_break(doc)
