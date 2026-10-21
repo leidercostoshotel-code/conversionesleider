@@ -60,6 +60,7 @@ sigue siendo seguro (no pierde contenido), solo que no queda editable.
 
 import argparse
 import re
+from datetime import date
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,17 @@ from PIL import Image
 
 FONT = "Arial"
 DPI = 300
+
+# Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
+# que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
+# la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
+# y el Sub Contralor es siempre el primer responsable.
+ELABORADA_POR_FIJO = "GPL/JACH"
+RESPONSABLE_FIJO = "Sub Contralor"
+
+
+def fecha_de_hoy() -> str:
+    return date.today().strftime("%d.%m.%Y")
 
 # ------------------------------------------------------------------ #
 # 1. PDF -> imágenes, imagen -> texto (OCR)
@@ -573,6 +585,7 @@ def add_header_table(doc, f):
         add_run(p, f"{label} : {f.get(key, '')}", size=9)
 
     c = table.cell(1, 1)
+    f = dict(f, reemplaza=fecha_de_hoy(), elaborada_por=ELABORADA_POR_FIJO)
     right_fields = [
         ("fecha_elaboracion", "Fecha de elaboración"),
         ("reemplaza", "Reemplaza a la norma del"),
@@ -616,7 +629,8 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            for name in b["names"]:
+            otros = [n for n in b["names"] if n.strip().lower() != RESPONSABLE_FIJO.lower()]
+            for name in [RESPONSABLE_FIJO] + otros:
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)

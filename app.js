@@ -23,6 +23,20 @@ const {
 
 const FONT = "Arial";
 const DPI = 300;
+
+// Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
+// que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
+// la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
+// y el Sub Contralor es siempre el primer responsable.
+const ELABORADA_POR_FIJO = "GPL/JACH";
+const RESPONSABLE_FIJO = "Sub Contralor";
+
+function fechaDeHoy() {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}.${mm}.${d.getFullYear()}`;
+}
 const A4_WIDTH_TWIPS = 11906;
 const A4_HEIGHT_TWIPS = 16838;
 const MARGIN_TWIPS = 700;
@@ -505,6 +519,7 @@ function buildHeaderTable(f) {
     children: cell10Children,
   });
 
+  f = { ...f, reemplaza: fechaDeHoy(), elaborada_por: ELABORADA_POR_FIJO };
   const rightFieldsDef = [
     ["fecha_elaboracion", "Fecha de elaboración"],
     ["reemplaza", "Reemplaza a la norma del"],
@@ -545,7 +560,10 @@ function buildContentBox(blocks) {
         break;
       case "responsables":
         children.push(makeParagraph("RESPONSABLES:", { bold: true }));
-        for (const name of b.names) children.push(makeParagraph(name));
+        {
+          const otros = b.names.filter((n) => n.trim().toLowerCase() !== RESPONSABLE_FIJO.toLowerCase());
+          for (const name of [RESPONSABLE_FIJO, ...otros]) children.push(makeParagraph(name));
+        }
         break;
       case "subheading":
         children.push(makeParagraph(b.text, { bold: true }));
