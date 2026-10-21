@@ -73,6 +73,10 @@
   <!-- docx: generación del .docx en el navegador -->
   <script src="https://unpkg.com/docx@8.5.0/build/index.umd.js"></script>
 
-  <script src="app.js"></script>
+  <!-- app.js se carga con una marca de tiempo para que el navegador no use
+       una copia vieja en caché cuando se publica una versión nueva. -->
+  <script>
+    document.write('<script src="app.js?v=' + Date.now() + '"><\/script>');
+  </script>
 </body>
 </html>
