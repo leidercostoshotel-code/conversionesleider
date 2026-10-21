@@ -92,10 +92,21 @@ function cleanValue(s) {
 }
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
+// El N° también viene en el nombre del archivo ("SPI 04.01.13.02 Despacho...").
+// Ese valor es exacto, mientras que el OCR a veces cambia el último dígito,
+// así que cuando está en el nombre manda sobre lo leído de la imagen.
+const FILENAME_NUM_RE = /(?<!\d)(\d{2}\.\d{2}(?:\.\d{2}){0,2})(?!\d)/;
+
+function numeroDesdeNombre(nombre) {
+  const m = FILENAME_NUM_RE.exec(nombre || "");
+  return m ? m[1] : null;
+}
 // La barra de "2/3" es opcional: Tesseract.js a veces se la come y lee
 // "Página : 23". Como va justo detrás de la etiqueta "Página", esos dígitos
 // pegados son casi seguro "página/total"; ver normalizarPagina().
-const PAGINA_RE = /P[aá]gina[^\d]{0,40}(\d{1,2}\s*[/\\|]?\s*\d{1,2})/;
+// "P?" porque con el render de pdf.js Tesseract a veces se come la "P"
+// inicial y lee "agina: 1/1".
+const PAGINA_RE = /P?[aáé]gina[^\d]{0,40}(\d{1,2}\s*[/\\|]?\s*\d{1,2})/;
 
 function normalizarPagina(raw) {
   const s = raw.replace(/\s+/g, "").replace(/[\\|]/g, "/");
@@ -231,6 +242,12 @@ function parseHeader(text) {
     }
   }
 
+  // Fecha sin puntos ("160412"): el OCR a veces se come los separadores.
+  const fe = fields.fecha_elaboracion || "";
+  if (/^\d{6}$/.test(fe)) {
+    fields.fecha_elaboracion = `${fe.slice(0, 2)}.${fe.slice(2, 4)}.${fe.slice(4)}`;
+  }
+
   const bodyText = lines.slice(bodyStartIdx).join("\n");
   return [fields, bodyText];
 }
@@ -243,7 +260,8 @@ const NUM_ITEM_RE = /^\s*(\d{1,2})[.)]\s+(.*)/;
 const LETTER_ITEM_RE = /^\s*([a-h])\)\s+(.*)/;
 // Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
 // OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
-const BULLET_ITEM_RE = /^\s*[•·\-*+=]\s+(.*)/;
+// El "." al inicio también cuenta: es como el navegador suele leer la viñeta.
+const BULLET_ITEM_RE = /^\s*[•·\-*+=.]\s+(.*)/;
 // El glifo de viñeta (•), en algunos PDF/fuentes, el OCR lo confunde con una
 // "e" suelta (ambigüedad visual con el punto de la viñeta). Se trata como
 // viñeta solo cuando es una "e" aislada seguida de mayúscula (inicio real de
@@ -268,13 +286,26 @@ const NOISE_LINE_PATTERNS = [
   /—\s*Intranet\s*$/i,
   /^\s*[←<]\s*\w+\s*[-–—]?\s*\d{0,3}%?\s*[-+]?\s*$/i,
   /^\s*P[aá]g\.?\s*\d+\s*$/i,
+  /Documento de uso interno/i,
 ];
+
+// Línea de "basura" del OCR: el navegador convierte las franjas grises de
+// la intranet en ristras como "ITTiaIl ol iTíimig1aíditGi". En ellas más de
+// la mitad de las letras son palos verticales (I, l, i, T, 1, í, Í).
+function isGarbageLine(line) {
+  const letters = line.match(/[\p{L}\p{N}]/gu) || [];
+  if (letters.length < 8) return false;
+  const palos = letters.filter((c) => "IliTt1íÍ|".includes(c)).length;
+  return palos / letters.length > 0.5;
+}
 
 function stripNoise(text) {
   for (const pat of NOISE_SUB_PATTERNS) {
     text = text.replace(pat, " ");
   }
-  const lines = text.split("\n").filter((ln) => !NOISE_LINE_PATTERNS.some((p) => p.test(ln)));
+  const lines = text.split("\n")
+    .filter((ln) => !NOISE_LINE_PATTERNS.some((p) => p.test(ln)))
+    .filter((ln) => !isGarbageLine(ln));
   return lines.join("\n");
 }
 
@@ -406,6 +437,8 @@ function parseBody(bodyText) {
     // descartarse.
     const before = stepsText.slice(0, m.index);
     if (before.trim()) blocks.push(...parseSteps(before));
+    // El título "PASOS A SEGUIR:" también va al Word, como en el PDF.
+    blocks.push({ type: "subheading", text: "PASOS A SEGUIR:" });
     stepsText = stepsText.slice(m.index + m[0].length);
   }
 
@@ -414,18 +447,33 @@ function parseBody(bodyText) {
 }
 
 function parseSteps(text) {
-  const lines = text.split("\n").map((ln) => ln.trim()).filter(Boolean);
+  // Se conserva si cada línea venía precedida de una línea en blanco: el
+  // OCR separa los párrafos/ítems con un renglón vacío, y esa es la única
+  // pista que queda cuando el navegador se come las viñetas.
+  const lines = [];
+  const blankBefore = [];
+  let pendingBlank = false;
+  for (const raw of text.split("\n")) {
+    const ln = raw.trim();
+    if (!ln) { pendingBlank = true; continue; }
+    lines.push(ln);
+    blankBefore.push(pendingBlank);
+    pendingBlank = false;
+  }
   const blocks = [];
   let current = null;
+  let prevLen = 0; // largo de la última línea física procesada
   let i = 0;
 
   while (i < lines.length) {
     const line = lines[i];
+    const thisLen = line.length;
 
     let m = NUM_ITEM_RE.exec(line);
     if (m) {
       if (current) blocks.push(current);
       current = { type: "numbered", n: m[1], text: m[2].trim() };
+      prevLen = thisLen;
       i++; continue;
     }
 
@@ -433,6 +481,7 @@ function parseSteps(text) {
     if (m) {
       if (current) blocks.push(current);
       current = { type: "letter", letter: m[1], text: m[2].trim() };
+      prevLen = thisLen;
       i++; continue;
     }
 
@@ -440,6 +489,7 @@ function parseSteps(text) {
     if (m) {
       if (current) blocks.push(current);
       current = { type: "bullet", text: m[1].trim() };
+      prevLen = thisLen;
       i++; continue;
     }
 
@@ -457,6 +507,7 @@ function parseSteps(text) {
     if (isHeadingLine(line) || SECTION_NUM_HEADING_RE.test(line) || allCapsHeading) {
       if (current) { blocks.push(current); current = null; }
       blocks.push({ type: "subheading", text: line });
+      prevLen = thisLen;
       i++; continue;
     }
 
@@ -480,18 +531,35 @@ function parseSteps(text) {
     if (looksLikeHeading && (current === null || nextStartsListAt1)) {
       if (current) { blocks.push(current); current = null; }
       blocks.push({ type: "subheading", text: line });
+      prevLen = thisLen;
       i++; continue;
     }
 
-    if (current) {
+    // Con el render del navegador, el OCR a veces se come por completo los
+    // glifos de viñeta y los ítems llegan sin marcador. Dentro de un párrafo
+    // genérico, una línea que empieza en mayúscula justo después de una que
+    // terminó en ".", ":" o ";" es un ítem nuevo, no la continuación
+    // envuelta del anterior.
+    // También es ítem nuevo si venía separado por una línea en blanco o si
+    // la línea anterior era corta (una línea envuelta ocupa casi todo el
+    // ancho; una corta es el final de su párrafo).
+    const nuevoItem =
+      current !== null &&
+      line[0] === line[0].toUpperCase() &&
+      line[0] !== line[0].toLowerCase() &&
+      ((current.type === "paragraph" && /[.:;]$/.test(current.text)) ||
+        ((current.type === "paragraph" || current.type === "bullet") && (blankBefore[i] || prevLen < 50)));
+    if (current && !nuevoItem) {
       current.text = (current.text + " " + line).trim();
     } else {
+      if (current) blocks.push(current);
       // OJO: se deja `current` apuntando a este párrafo (no se hace push
       // todavía) para que la siguiente línea, si es una continuación
       // envuelta del mismo párrafo, se una aquí en vez de crear un bloque
       // nuevo por cada línea física del OCR.
       current = { type: "paragraph", text: line };
     }
+    prevLen = thisLen;
     i++;
   }
 
@@ -683,6 +751,7 @@ async function getOcrWorker(onLog) {
 async function convertPdf(file, pageRangeSpec, onLog) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const numeroArchivo = numeroDesdeNombre(file.name);
 
   const range = parsePageRange(pageRangeSpec);
   const firstPage = range ? Math.max(1, range[0]) : 1;
@@ -701,6 +770,7 @@ async function convertPdf(file, pageRangeSpec, onLog) {
     const { data: { text: rawText } } = await worker.recognize(canvas);
     const text = stripNoise(rawText);
     const [fields, bodyText] = parseHeader(text);
+    if (fields !== null && numeroArchivo) fields.numero = numeroArchivo;
 
     if (idx > 0) {
       allChildren.push(new Paragraph({ children: [new PageBreak()] }));
