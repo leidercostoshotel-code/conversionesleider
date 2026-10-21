@@ -66,12 +66,29 @@ const RIGHT_LABELS = [
 const ALL_LABELS = LEFT_LABELS.concat(RIGHT_LABELS);
 const LABEL_RE_SOURCE = ALL_LABELS.map(([k, p]) => `(?<${k}>${p})`).join("|");
 const LEFT_KEYS = new Set(LEFT_LABELS.map(([k]) => k));
+// Fila de la tabla de cabecera a la que pertenece cada etiqueta de la
+// derecha -> campo de la izquierda de esa misma fila. Sirve cuando el OCR se
+// come la etiqueta izquierda ("Area :", "Campo :", "Norma :") y solo queda su
+// valor suelto delante de la etiqueta derecha.
+const ROW_LEFT_KEY = {
+  fecha_elaboracion: "area",
+  reemplaza: "campo",
+  elaborada_por: "norma_titulo",
+  autorizado_por: "norma_titulo",
+};
+
+function matchKey(m) {
+  for (const gk of Object.keys(m.groups || {})) {
+    if (m.groups[gk] !== undefined) return gk;
+  }
+  return null;
+}
 
 function cleanValue(s) {
   // Quita el "|" que a veces deja el OCR como ruido del borde de la
   // columna de la tabla (p. ej. "Bono por Fallecimiento de |"), y
   // normaliza espacios repetidos que puedan quedar al quitarlo.
-  return s.replace(/[|\[\]]/g, " ").replace(/\s+/g, " ").trim();
+  return s.replace(/[|\[\]]/g, " ").replace(/[\s\-–—]+$/, "").replace(/\s+/g, " ").trim();
 }
 
 const NUMERO_RE = /\b(\d{2}\.\d{2}(?:\.\d{2}){0,2})\b/;
@@ -173,10 +190,20 @@ function parseHeader(text) {
 
     const firstStart = matches[0].index;
     if (firstStart > 0) {
-      const preText = ln.slice(0, firstStart).trim();
-      const target = lastLeftKey || lastRightKey;
-      if (preText && target) {
-        fields[target] = ((fields[target] || "") + " " + preText).trim();
+      const preText = cleanValue(ln.slice(0, firstStart).replace(/^[\s:\-–—]+/, ""));
+      const rowLeft = ROW_LEFT_KEY[matchKey(matches[0])];
+      if (preText && rowLeft && !fields[rowLeft]) {
+        // La etiqueta izquierda se perdió en el OCR (con el render de pdf.js,
+        // Tesseract omite "Area :" y deja solo
+        // "- Contraloría Fecha de elaboración - 14.03.15"): el texto previo a
+        // la etiqueta derecha es el valor izquierdo de esa misma fila.
+        fields[rowLeft] = preText;
+        lastLeftKey = rowLeft;
+      } else {
+        const target = lastLeftKey || lastRightKey;
+        if (preText && target) {
+          fields[target] = ((fields[target] || "") + " " + preText).trim();
+        }
       }
     }
 
