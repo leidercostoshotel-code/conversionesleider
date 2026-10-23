@@ -265,7 +265,11 @@ function parseHeader(text) {
 // 3. Reconocer el cuerpo: Objetivo / Responsables / Pasos a Seguir
 // ------------------------------------------------------------------ //
 
-const NUM_ITEM_RE = /^\s*(\d{1,2})[.)]\s+(.*)/;
+// Paso numerado: "1. ", "1) ", y también las variantes que trae el OCR o el
+// propio PDF: "1.- ", "1- ", "7.-Estos" (sin espacio). Lo que sigue al
+// marcador debe empezar con letra o comilla, para no confundirlo con una
+// cifra como "75.00".
+const NUM_ITEM_RE = /^\s*(\d{1,2})\s*(?:\.-|[.)]|-)\s*(?=[A-Za-zÁÉÍÓÚÑÜáéíóúñü“"(¿¡])(.*)/;
 const LETTER_ITEM_RE = /^\s*([a-h])\)\s+(.*)/;
 // Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
 // OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
@@ -430,11 +434,20 @@ function parseBody(bodyText) {
     blocks.push(...parseSteps(preResponsables));
   }
   if (responsables) {
-    const names = responsables.split("\n")
-      .map((ln) => ln.trim())
-      .filter(Boolean)
-      .map((ln) => stripChars(ln, " ."));
+    // La lista de nombres termina en el primer título que aparezca (p. ej.
+    // "COSTO POR SERVICIO SEGÚN CONTRATO:"); lo que sigue se reconstruye
+    // con el parser genérico.
+    const lineas = responsables.split("\n").map((ln) => ln.trim()).filter(Boolean);
+    let corte = lineas.length;
+    for (let k = 0; k < lineas.length; k++) {
+      const ln = lineas[k];
+      const esTitulo = isHeadingLine(ln) ||
+        (ln.length <= 45 && ln === ln.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(ln) && !/[.,;]$/.test(ln));
+      if (esTitulo && k > 0 && ln.length >= 3) { corte = k; break; }
+    }
+    const names = lineas.slice(0, corte).map((ln) => stripChars(ln, " ."));
     blocks.push({ type: "responsables", names });
+    if (corte < lineas.length) blocks.push(...parseSteps(lineas.slice(corte).join("\n")));
   }
 
   let stepsText = remaining;
@@ -479,7 +492,10 @@ function parseSteps(text) {
     const thisLen = line.length;
 
     let m = NUM_ITEM_RE.exec(line);
-    if (m) {
+    // "1.- RUTINA" (texto corto en mayúsculas tras el "N.-") es un subtítulo
+    // numerado, no un paso: se deja para la regla de títulos.
+    const tituloNumerado = Boolean(m && SECTION_NUM_HEADING_RE.test(line) && (m[2].trim() === m[2].trim().toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(m[2])));
+    if (m && !tituloNumerado) {
       if (current) blocks.push(current);
       current = { type: "numbered", n: m[1], text: m[2].trim() };
       prevLen = thisLen;
@@ -559,12 +575,16 @@ function parseSteps(text) {
     // También es ítem nuevo si venía separado por una línea en blanco o si
     // la línea anterior era corta (una línea envuelta ocupa casi todo el
     // ancho; una corta es el final de su párrafo).
+    // (Una línea que empieza con cifra, p. ej. "24 Horas 30.00", también es
+    // ítem nuevo si viene tras línea en blanco o tras línea corta.)
+    const empiezaMayus = line[0] === line[0].toUpperCase() && line[0] !== line[0].toLowerCase();
+    const empiezaMayusOCifra = empiezaMayus || /^\d/.test(line);
     const nuevoItem =
       current !== null &&
-      line[0] === line[0].toUpperCase() &&
-      line[0] !== line[0].toLowerCase() &&
-      ((current.type === "paragraph" && /[.:;]$/.test(current.text)) ||
-        ((current.type === "paragraph" || current.type === "bullet") && (blankBefore[i] || prevLen < 50)));
+      ((current.type === "paragraph" && empiezaMayus && /[.:;]$/.test(current.text)) ||
+        ((current.type === "paragraph" || current.type === "bullet") && empiezaMayusOCifra &&
+          (blankBefore[i] || prevLen < 50) &&
+          !(/^\d/.test(line) && current.text.endsWith(":"))));
     if (current && !nuevoItem) {
       current.text = (current.text + " " + line).trim();
     } else {
@@ -707,6 +727,32 @@ function buildContentBox(blocks) {
   });
 }
 
+// Zona del cuerpo (fracciones del alto/ancho de la página) que ocupa el
+// cuadro de contenido debajo de la cabecera en estos manuales. Se usa para
+// los anexos: formularios con tablas que el OCR no puede reconstruir.
+const BODY_CROP = [0.08, 0.228, 0.93, 0.86]; // izquierda, arriba, derecha, abajo
+
+// Las páginas "ANEXO N" son formularios (tablas, líneas de puntos) que como
+// texto quedan vacíos: se insertan como imagen bajo la cabecera.
+function esPaginaAnexo(bodyText) {
+  const primeras = bodyText.split("\n").map((ln) => ln.trim()).filter(Boolean).slice(0, 3);
+  return primeras.some((ln) => /^ANEXO\s*\d*\s*$/i.test(ln));
+}
+
+// Inserta solo la zona del cuerpo de la página (bajo la cabecera).
+async function buildBodyImage(canvas) {
+  const [l, t, r, b] = BODY_CROP;
+  const sx = Math.round(canvas.width * l);
+  const sy = Math.round(canvas.height * t);
+  const sw = Math.round(canvas.width * (r - l));
+  const sh = Math.round(canvas.height * (b - t));
+  const recorte = document.createElement("canvas");
+  recorte.width = sw;
+  recorte.height = sh;
+  recorte.getContext("2d").drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  return buildFullPageImage(recorte);
+}
+
 async function buildFullPageImage(canvas) {
   const dataUrl = canvas.toDataURL("image/png");
   const res = await fetch(dataUrl);
@@ -764,13 +810,24 @@ async function getOcrWorker(onLog) {
   return ocrWorker;
 }
 
-// Rellena 'pagina' ("k/N") en las cabeceras reconocidas que quedaron sin
-// número, contando las páginas reconocidas del documento.
+// Renumera 'pagina' ("k/N") en las cabeceras reconocidas: k es el orden de
+// la página entre las reconocidas (el OCR confunde "7/7" con "1/7" o se come
+// la línea entera) y N el total que más se repite en lo leído, o el número
+// de páginas reconocidas si no se leyó ninguno.
 function completarNumerosDePagina(listaFields) {
   const reconocidas = listaFields.filter((f) => f !== null);
-  const total = reconocidas.length;
+  const conteo = new Map();
+  for (const f of reconocidas) {
+    const m = /^\s*\d{1,2}\s*\/\s*(\d{1,2})\s*$/.exec(f.pagina || "");
+    if (m) conteo.set(m[1], (conteo.get(m[1]) || 0) + 1);
+  }
+  let total = String(reconocidas.length);
+  let mejor = 0;
+  for (const [t, n] of conteo) {
+    if (n > mejor) { mejor = n; total = t; }
+  }
   reconocidas.forEach((f, i) => {
-    if (!f.pagina) f.pagina = `${i + 1}/${total}`;
+    f.pagina = `${i + 1}/${total}`;
   });
 }
 
@@ -825,6 +882,11 @@ async function convertPdf(file, pageRangeSpec, onLog) {
 
     allChildren.push(buildHeaderTable(fields));
     allChildren.push(new Paragraph({ text: "" })); // espaciador
+    if (esPaginaAnexo(bodyText)) {
+      onLog(`  · Página de anexo (formulario): el cuerpo se insertó como imagen.`);
+      allChildren.push(await buildBodyImage(canvas));
+      continue;
+    }
     const blocks = parseBody(bodyText);
     allChildren.push(buildContentBox(blocks));
   }
