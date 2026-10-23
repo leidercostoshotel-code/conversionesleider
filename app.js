@@ -168,13 +168,19 @@ function parseHeader(text) {
 
   const numeroMatch = NUMERO_RE.exec(headerText);
   const paginaMatch = PAGINA_RE.exec(headerText);
-  if (!numeroMatch || !paginaMatch) {
+  // En algunos PDF el OCR se come la línea "Página : 1/1" entera. Si aun así
+  // hay N° y alguna etiqueta inequívoca del cuadro (Fecha de elaboración /
+  // Elaborada por / Manual de Procedimientos), la cabecera se acepta igual y
+  // el número de página se completa después contando las páginas
+  // reconocidas (ver convertPdf()).
+  const otrasEtiquetas = /Fecha de elaboraci|Elaborada por|Manual de Procedimientos/i.test(headerText);
+  if (!numeroMatch || !(paginaMatch || otrasEtiquetas)) {
     return [null, text]; // no se reconoce cabecera -> esta página va como imagen
   }
 
   const fields = {
     numero: numeroMatch[1],
-    pagina: normalizarPagina(paginaMatch[1]),
+    pagina: paginaMatch ? normalizarPagina(paginaMatch[1]) : "",
   };
 
   // Se rastrea la última etiqueta activa de cada columna por separado
@@ -243,9 +249,12 @@ function parseHeader(text) {
   }
 
   // Fecha sin puntos ("160412"): el OCR a veces se come los separadores.
+  // Fecha sin puntos o con puntos perdidos ("160412", "2302.15", "23.0910"):
+  // si quedan exactamente 6 dígitos, se reescribe como DD.MM.AA.
   const fe = fields.fecha_elaboracion || "";
-  if (/^\d{6}$/.test(fe)) {
-    fields.fecha_elaboracion = `${fe.slice(0, 2)}.${fe.slice(2, 4)}.${fe.slice(4)}`;
+  const feDigits = fe.replace(/\D/g, "");
+  if (feDigits.length === 6 && /^[\d.\s]+$/.test(fe)) {
+    fields.fecha_elaboracion = `${feDigits.slice(0, 2)}.${feDigits.slice(2, 4)}.${feDigits.slice(4)}`;
   }
 
   const bodyText = lines.slice(bodyStartIdx).join("\n");
@@ -528,7 +537,14 @@ function parseSteps(text) {
       nextStartsListAt1 = !!(nm && nm[1] === "1");
     }
 
-    if (looksLikeHeading && (current === null || nextStartsListAt1)) {
+    // Un renglón corto aislado (línea en blanco antes y después) es un
+    // subtítulo aunque haya un párrafo abierto (p. ej. "General").
+    // Se exige además que el párrafo anterior haya terminado en ".": si
+    // terminó en ":" o sin puntuación, lo que sigue es una lista.
+    const aislado =
+      blankBefore[i] && i + 1 < lines.length && blankBefore[i + 1] &&
+      (current === null || (current.text || "").endsWith("."));
+    if (looksLikeHeading && (current === null || nextStartsListAt1 || aislado)) {
       if (current) { blocks.push(current); current = null; }
       blocks.push({ type: "subheading", text: line });
       prevLen = thisLen;
@@ -748,6 +764,16 @@ async function getOcrWorker(onLog) {
   return ocrWorker;
 }
 
+// Rellena 'pagina' ("k/N") en las cabeceras reconocidas que quedaron sin
+// número, contando las páginas reconocidas del documento.
+function completarNumerosDePagina(listaFields) {
+  const reconocidas = listaFields.filter((f) => f !== null);
+  const total = reconocidas.length;
+  reconocidas.forEach((f, i) => {
+    if (!f.pagina) f.pagina = `${i + 1}/${total}`;
+  });
+}
+
 async function convertPdf(file, pageRangeSpec, onLog) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -762,6 +788,9 @@ async function convertPdf(file, pageRangeSpec, onLog) {
   const allChildren = [];
   const totalPages = lastPage - firstPage + 1;
 
+  // Primero se hace el OCR de todas las páginas, para poder numerar ("k/N")
+  // las que llegaron sin "Página : ..." legible.
+  const paginas = [];
   for (let p = firstPage; p <= lastPage; p++) {
     const idx = p - firstPage;
     onLog(`OCR página ${idx + 1}/${totalPages} (página ${p} del PDF)...`);
@@ -771,7 +800,11 @@ async function convertPdf(file, pageRangeSpec, onLog) {
     const text = stripNoise(rawText);
     const [fields, bodyText] = parseHeader(text);
     if (fields !== null && numeroArchivo) fields.numero = numeroArchivo;
+    paginas.push({ p, idx, canvas, text, fields, bodyText });
+  }
+  completarNumerosDePagina(paginas.map((pg) => pg.fields));
 
+  for (const { p, idx, canvas, text, fields, bodyText } of paginas) {
     if (idx > 0) {
       allChildren.push(new Paragraph({ children: [new PageBreak()] }));
     }
