@@ -251,10 +251,21 @@ def parse_header(text: str):
 
     numero_match = NUMERO_RE.search(header_text)
     pagina_match = PAGINA_RE.search(header_text)
-    if not numero_match or not pagina_match:
+    # En algunos PDF el OCR se come la línea "Página : 1/1" entera. Si aun
+    # así hay N° y alguna etiqueta inequívoca del cuadro (Fecha de
+    # elaboración / Elaborada por / Manual de Procedimientos), la cabecera
+    # se acepta igual y el número de página se completa después contando
+    # las páginas reconocidas (ver convert()).
+    otras_etiquetas = re.search(
+        r"Fecha de elaboraci|Elaborada por|Manual de Procedimientos", header_text, re.I
+    )
+    if not numero_match or not (pagina_match or otras_etiquetas):
         return None, text  # no se reconoce cabecera -> esta página va como imagen
 
-    fields = {"numero": numero_match.group(1), "pagina": normalizar_pagina(pagina_match.group(1))}
+    fields = {
+        "numero": numero_match.group(1),
+        "pagina": normalizar_pagina(pagina_match.group(1)) if pagina_match else "",
+    }
     # Se rastrea la última etiqueta activa de cada columna por separado
     # (izquierda: Área/Campo/Norma: derecha: Fecha/Reemplaza/Elaborada
     # por/Autorizado...). El OCR a veces fusiona ambas columnas en una
@@ -306,9 +317,12 @@ def parse_header(text: str):
                 last_right_key = key
 
     # Fecha sin puntos ("160412"): el OCR a veces se come los separadores.
+    # Fecha sin puntos o con puntos perdidos ("160412", "2302.15", "23.0910"):
+    # si quedan exactamente 6 dígitos, se reescribe como DD.MM.AA.
     fe = fields.get("fecha_elaboracion", "")
-    if re.fullmatch(r"\d{6}", fe):
-        fields["fecha_elaboracion"] = f"{fe[:2]}.{fe[2:4]}.{fe[4:]}"
+    fe_digits = re.sub(r"\D", "", fe)
+    if len(fe_digits) == 6 and re.fullmatch(r"[\d.\s]+", fe):
+        fields["fecha_elaboracion"] = f"{fe_digits[:2]}.{fe_digits[2:4]}.{fe_digits[4:]}"
 
     body_text = "\n".join(lines[body_start_idx:])
     return fields, body_text
@@ -579,7 +593,17 @@ def parse_steps(text):
             nm = NUM_ITEM_RE.match(lines[i + 1])
             next_starts_list_at_1 = bool(nm and nm.group(1) == "1")
 
-        if looks_like_heading and (current is None or next_starts_list_at_1):
+        # Un renglón corto aislado (línea en blanco antes y después) es un
+        # subtítulo aunque haya un párrafo abierto (p. ej. "General").
+        # Se exige además que el párrafo anterior haya terminado en ".": si
+        # terminó en ":" o sin puntuación, lo que sigue es una lista.
+        aislado = (
+            blank_before[i]
+            and i + 1 < len(lines)
+            and blank_before[i + 1]
+            and (current is None or current.get("text", "").endswith("."))
+        )
+        if looks_like_heading and (current is None or next_starts_list_at_1 or aislado):
             if current:
                 blocks.append(current)
                 current = None
@@ -766,6 +790,16 @@ def parse_page_range(spec, total_pages):
     return (n, n)
 
 
+def completar_numeros_de_pagina(lista_fields):
+    """Rellena 'pagina' ("k/N") en las cabeceras reconocidas que quedaron
+    sin número, contando las páginas reconocidas del documento."""
+    reconocidas = [f for f in lista_fields if f is not None]
+    total = len(reconocidas)
+    for k, f in enumerate(reconocidas, start=1):
+        if not f.get("pagina"):
+            f["pagina"] = f"{k}/{total}"
+
+
 def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False, verbose=True):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -782,6 +816,9 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
         section.top_margin = section.bottom_margin = Twips(700)
         section.left_margin = section.right_margin = Twips(700)
 
+        # Primero se hace el OCR de todas las páginas, para poder numerar
+        # ("k/N") las que llegaron sin "Página : ..." legible.
+        paginas = []
         for i, img_path in enumerate(images):
             if verbose:
                 print(f"  · OCR página {i + 1}/{len(images)}...")
@@ -790,7 +827,10 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
             fields, body_text = parse_header(text)
             if fields is not None and numero_archivo:
                 fields["numero"] = numero_archivo
+            paginas.append((img_path, fields, body_text))
+        completar_numeros_de_pagina([f for _, f, _ in paginas])
 
+        for i, (img_path, fields, body_text) in enumerate(paginas):
             if i > 0:
                 add_page_break(doc)
 
