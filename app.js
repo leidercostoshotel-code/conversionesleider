@@ -25,11 +25,15 @@ const FONT = "Arial";
 const DPI = 300;
 
 // Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
-// que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
-// la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
-// y el Sub Contralor es siempre el primer responsable.
-const ELABORADA_POR_FIJO = "GPL/JACH";
-const RESPONSABLE_FIJO = "Sub Contralor";
+// que diga el PDF original (pedido del usuario):
+// - "Fecha de elaboración" es la fecha en que se hace la conversión.
+// - "Reemplaza a la norma del" baja la fecha de elaboración del PDF original
+//   (o, si no se leyó, la fecha de "Reemplaza" original).
+// - La elabora JACH y la revisa GPL (línea "Revisado por" nueva).
+// - "Contralor" y "Sub Contralor" van siempre primero en RESPONSABLES.
+const ELABORADA_POR_FIJO = "JACH";
+const REVISADO_POR_FIJO = "GPL";
+const RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"];
 
 function fechaDeHoy() {
   const d = new Date();
@@ -269,7 +273,7 @@ function parseHeader(text) {
 // propio PDF: "1.- ", "1- ", "7.-Estos" (sin espacio). Lo que sigue al
 // marcador debe empezar con letra o comilla, para no confundirlo con una
 // cifra como "75.00".
-const NUM_ITEM_RE = /^\s*(\d{1,2})\s*(?:\.-|[.)]|-)\s*(?=[A-Za-zÁÉÍÓÚÑÜáéíóúñü“"(¿¡])(.*)/;
+const NUM_ITEM_RE = /^\s*(\d{1,2})\s*(?:\.?-+|[.)])\s*(?=[A-Za-zÁÉÍÓÚÑÜáéíóúñü“"(¿¡])(.*)/;
 const LETTER_ITEM_RE = /^\s*([a-h])\)\s+(.*)/;
 // Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
 // OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
@@ -650,11 +654,18 @@ function buildHeaderTable(f) {
     children: cell10Children,
   });
 
-  f = { ...f, reemplaza: fechaDeHoy(), elaborada_por: ELABORADA_POR_FIJO };
+  f = {
+    ...f,
+    fecha_elaboracion: fechaDeHoy(),
+    reemplaza: f.fecha_elaboracion || f.reemplaza || "",
+    elaborada_por: ELABORADA_POR_FIJO,
+    revisado_por: REVISADO_POR_FIJO,
+  };
   const rightFieldsDef = [
     ["fecha_elaboracion", "Fecha de elaboración"],
     ["reemplaza", "Reemplaza a la norma del"],
     ["elaborada_por", "Elaborada por"],
+    ["revisado_por", "Revisado por"],
     ["referencia_corporativa", "Referencia Corporativa SL"],
     ["revisado_aprobado", "Revisado y aprobado por"],
   ];
@@ -692,8 +703,9 @@ function buildContentBox(blocks) {
       case "responsables":
         children.push(makeParagraph("RESPONSABLES:", { bold: true }));
         {
-          const otros = b.names.filter((n) => n.trim().toLowerCase() !== RESPONSABLE_FIJO.toLowerCase());
-          for (const name of [RESPONSABLE_FIJO, ...otros]) children.push(makeParagraph(name));
+          const fijosNorm = new Set(RESPONSABLES_FIJOS.map((x) => x.toLowerCase().replace(/-/g, " ")));
+          const otros = b.names.filter((n) => !fijosNorm.has(n.trim().toLowerCase().replace(/-/g, " ")));
+          for (const name of [...RESPONSABLES_FIJOS, ...otros]) children.push(makeParagraph(name));
         }
         break;
       case "subheading":

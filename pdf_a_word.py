@@ -78,11 +78,15 @@ FONT = "Arial"
 DPI = 300
 
 # Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
-# que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
-# la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
-# y el Sub Contralor es siempre el primer responsable.
-ELABORADA_POR_FIJO = "GPL/JACH"
-RESPONSABLE_FIJO = "Sub Contralor"
+# que diga el PDF original (pedido del usuario):
+# - "Fecha de elaboración" es la fecha en que se hace la conversión.
+# - "Reemplaza a la norma del" baja la fecha de elaboración del PDF original
+#   (o, si no se leyó, la fecha de "Reemplaza" original).
+# - La elabora JACH y la revisa GPL (línea "Revisado por" nueva).
+# - "Contralor" y "Sub Contralor" van siempre primero en RESPONSABLES.
+ELABORADA_POR_FIJO = "JACH"
+REVISADO_POR_FIJO = "GPL"
+RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
 
 
 def fecha_de_hoy() -> str:
@@ -336,7 +340,7 @@ def parse_header(text: str):
 # propio PDF: "1.- ", "1- ", "7.-Estos" (sin espacio). Lo que sigue al
 # marcador debe empezar con letra o comilla, para no confundirlo con una
 # cifra como "75.00".
-NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})\s*(?:\.-|[.\)]|-)\s*(?=[A-Za-zÁÉÍÓÚÑÜáéíóúñü“\"(¿¡])(.*)")
+NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})\s*(?:\.?-+|[.\)])\s*(?=[A-Za-zÁÉÍÓÚÑÜáéíóúñü“\"(¿¡])(.*)")
 LETTER_ITEM_RE = re.compile(r"^\s*([a-h])\)\s+(.*)")
 # Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
 # OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
@@ -724,11 +728,18 @@ def add_header_table(doc, f):
         add_run(p, f"{label} : {f.get(key, '')}", size=9)
 
     c = table.cell(1, 1)
-    f = dict(f, reemplaza=fecha_de_hoy(), elaborada_por=ELABORADA_POR_FIJO)
+    f = dict(
+        f,
+        fecha_elaboracion=fecha_de_hoy(),
+        reemplaza=f.get("fecha_elaboracion") or f.get("reemplaza") or "",
+        elaborada_por=ELABORADA_POR_FIJO,
+        revisado_por=REVISADO_POR_FIJO,
+    )
     right_fields = [
         ("fecha_elaboracion", "Fecha de elaboración"),
         ("reemplaza", "Reemplaza a la norma del"),
         ("elaborada_por", "Elaborada por"),
+        ("revisado_por", "Revisado por"),
         ("referencia_corporativa", "Referencia Corporativa SL"),
         ("revisado_aprobado", "Revisado y aprobado por"),
     ]
@@ -768,8 +779,9 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            otros = [n for n in b["names"] if n.strip().lower() != RESPONSABLE_FIJO.lower()]
-            for name in [RESPONSABLE_FIJO] + otros:
+            fijos_norm = {x.lower().replace("-", " ") for x in RESPONSABLES_FIJOS}
+            otros = [n for n in b["names"] if n.strip().lower().replace("-", " ") not in fijos_norm]
+            for name in RESPONSABLES_FIJOS + otros:
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)
