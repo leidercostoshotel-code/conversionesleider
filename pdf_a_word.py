@@ -814,6 +814,28 @@ def add_full_page_image(doc, image_path):
 BODY_CROP = (0.08, 0.228, 0.93, 0.86)  # izquierda, arriba, derecha, abajo
 
 
+# Marcas de las páginas de la intranet que envuelven al manual (portada con
+# el menú y página final con el pie del sitio): no llevan contenido y, a
+# pedido del usuario, no se incluyen en el .docx.
+INTRANET_MARKERS = [
+    r"Intranet corporativa",
+    r"Cerrar sesi[oó]n",
+    r"Todos los derechos reservados",
+    r"Anexos telef[oó]nicos",
+    r"Procedimientos, eventos y comunicaciones",
+]
+
+
+def es_pagina_intranet(raw_text: str, text_limpio: str) -> bool:
+    """Página sin cabecera que además es solo "cáscara" de la intranet
+    (menú/portada o pie del sitio), o que casi no tiene texto."""
+    if re.search(r"SPI\s+SWISS", raw_text, re.I):
+        return False
+    if any(re.search(p, raw_text, re.I) for p in INTRANET_MARKERS):
+        return True
+    return len(re.sub(r"\s+", " ", text_limpio).strip()) < 120
+
+
 def es_pagina_anexo(body_text: str) -> bool:
     """Las páginas "ANEXO N" son formularios (tablas, líneas de puntos)
     que como texto quedan vacíos: se insertan como imagen bajo la cabecera."""
@@ -891,11 +913,15 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
         for i, img_path in enumerate(images):
             if verbose:
                 print(f"  · OCR página {i + 1}/{len(images)}...")
-            text = ocr_page(img_path)
-            text = strip_noise(text)
+            raw_text = ocr_page(img_path)
+            text = strip_noise(raw_text)
             fields, body_text = parse_header(text)
             if fields is not None and numero_archivo:
                 fields["numero"] = numero_archivo
+            if fields is None and es_pagina_intranet(raw_text, text):
+                if verbose:
+                    print(f"  · Página {i + 1} omitida (portada/pie de la intranet, sin contenido).")
+                continue
             paginas.append((img_path, fields, body_text))
         completar_numeros_de_pagina([f for _, f, _ in paginas])
 
