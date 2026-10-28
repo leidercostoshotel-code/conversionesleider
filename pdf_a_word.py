@@ -78,11 +78,15 @@ FONT = "Arial"
 DPI = 300
 
 # Valores fijos que se escriben SIEMPRE en el .docx de salida, en vez de lo
-# que diga el PDF original (pedido del usuario): la norma nueva reemplaza a
-# la anterior en la fecha en que se hace la conversión, la elabora GPL/JACH,
-# y el Sub Contralor es siempre el primer responsable.
-ELABORADA_POR_FIJO = "GPL/JACH"
-RESPONSABLE_FIJO = "Sub Contralor"
+# que diga el PDF original (pedido del usuario):
+# - "Fecha de elaboración" es la fecha en que se hace la conversión.
+# - "Reemplaza a la norma del" baja la fecha de elaboración del PDF original
+#   (o, si no se leyó, la fecha de "Reemplaza" original).
+# - La elabora JACH y la revisa GPL (línea "Revisado por" nueva).
+# - "Contralor" y "Sub Contralor" van siempre primero en RESPONSABLES.
+ELABORADA_POR_FIJO = "JACH"
+REVISADO_POR_FIJO = "GPL"
+RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
 
 
 def fecha_de_hoy() -> str:
@@ -332,7 +336,11 @@ def parse_header(text: str):
 # 3. Reconocer el cuerpo: Objetivo / Responsables / Pasos a Seguir
 # ------------------------------------------------------------------ #
 
-NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})[.\)]\s+(.*)")
+# Paso numerado: "1. ", "1) ", y también las variantes que trae el OCR o el
+# propio PDF: "1.- ", "1- ", "7.-Estos" (sin espacio). Lo que sigue al
+# marcador debe empezar con letra o comilla, para no confundirlo con una
+# cifra como "75.00".
+NUM_ITEM_RE = re.compile(r"^\s*(\d{1,2})\s*(?:\.?-+|[.\)])\s*(?=[A-Za-zÁÉÍÓÚÑÜáéíóúñü“\"(¿¡])(.*)")
 LETTER_ITEM_RE = re.compile(r"^\s*([a-h])\)\s+(.*)")
 # Además de los glifos reales de viñeta, se aceptan "+" y "=": así lee el
 # OCR, respectivamente, al "•" pequeño y al "▪" cuadrado de algunos PDF.
@@ -486,8 +494,20 @@ def parse_body(body_text: str):
         # genérico en vez de perderla.
         blocks.extend(parse_steps(pre_responsables))
     if responsables:
-        names = [ln.strip(" .") for ln in responsables.splitlines() if ln.strip()]
+        # La lista de nombres termina en el primer título que aparezca
+        # (p. ej. "COSTO POR SERVICIO SEGÚN CONTRATO:"); lo que sigue se
+        # reconstruye con el parser genérico.
+        lineas = [ln.strip() for ln in responsables.splitlines() if ln.strip()]
+        corte = len(lineas)
+        for k, ln in enumerate(lineas):
+            es_titulo = is_heading_line(ln) or (len(ln) <= 45 and ln.isupper() and not ln.endswith((".", ",", ";")))
+            if es_titulo and k > 0 and len(ln) >= 3:
+                corte = k
+                break
+        names = [ln.strip(" .") for ln in lineas[:corte]]
         blocks.append({"type": "responsables", "names": names})
+        if corte < len(lineas):
+            blocks.extend(parse_steps("\n".join(lineas[corte:])))
 
     # Lo que sigue (o todo el texto, si esta página es una continuación
     # sin encabezados) se interpreta como la lista de pasos.
@@ -537,7 +557,10 @@ def parse_steps(text):
         this_len = len(line)
 
         m = NUM_ITEM_RE.match(line)
-        if m:
+        # "1.- RUTINA" (texto corto en mayúsculas tras el "N.-") es un
+        # subtítulo numerado, no un paso: se deja para la regla de títulos.
+        titulo_numerado = bool(m and SECTION_NUM_HEADING_RE.match(line) and m.group(2).strip().isupper())
+        if m and not titulo_numerado:
             if current:
                 blocks.append(current)
             current = {"type": "numbered", "n": m.group(1), "text": m.group(2).strip()}
@@ -620,12 +643,17 @@ def parse_steps(text):
         # También es ítem nuevo si venía separado por una línea en blanco
         # o si la línea anterior era corta (una línea envuelta ocupa casi
         # todo el ancho; una corta es el final de su párrafo).
+        # (Una línea que empieza con cifra, p. ej. "24 Horas 30.00", también
+        # es ítem nuevo si viene tras línea en blanco o tras línea corta.)
+        empieza_mayus_o_cifra = line[:1].isupper() or line[:1].isdigit()
         nuevo_item = (
             current is not None
-            and line[:1].isupper()
             and (
-                (current["type"] == "paragraph" and re.search(r"[.:;]$", current["text"]) is not None)
-                or (current["type"] in ("paragraph", "bullet") and (blank_before[i] or prev_len < 50))
+                (current["type"] == "paragraph" and line[:1].isupper()
+                 and re.search(r"[.:;]$", current["text"]) is not None)
+                or (current["type"] in ("paragraph", "bullet") and empieza_mayus_o_cifra
+                    and (blank_before[i] or prev_len < 50)
+                    and not (line[:1].isdigit() and current["text"].endswith(":")))
             )
         )
         if current and not nuevo_item:
@@ -700,11 +728,18 @@ def add_header_table(doc, f):
         add_run(p, f"{label} : {f.get(key, '')}", size=9)
 
     c = table.cell(1, 1)
-    f = dict(f, reemplaza=fecha_de_hoy(), elaborada_por=ELABORADA_POR_FIJO)
+    f = dict(
+        f,
+        fecha_elaboracion=fecha_de_hoy(),
+        reemplaza=f.get("fecha_elaboracion") or f.get("reemplaza") or "",
+        elaborada_por=ELABORADA_POR_FIJO,
+        revisado_por=REVISADO_POR_FIJO,
+    )
     right_fields = [
         ("fecha_elaboracion", "Fecha de elaboración"),
         ("reemplaza", "Reemplaza a la norma del"),
         ("elaborada_por", "Elaborada por"),
+        ("revisado_por", "Revisado por"),
         ("referencia_corporativa", "Referencia Corporativa SL"),
         ("revisado_aprobado", "Revisado y aprobado por"),
     ]
@@ -744,8 +779,9 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            otros = [n for n in b["names"] if n.strip().lower() != RESPONSABLE_FIJO.lower()]
-            for name in [RESPONSABLE_FIJO] + otros:
+            fijos_norm = {x.lower().replace("-", " ") for x in RESPONSABLES_FIJOS}
+            otros = [n for n in b["names"] if n.strip().lower().replace("-", " ") not in fijos_norm]
+            for name in RESPONSABLES_FIJOS + otros:
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)
@@ -772,6 +808,33 @@ def add_full_page_image(doc, image_path):
     doc.add_picture(str(image_path), width=usable_w)
 
 
+# Zona del cuerpo (fracciones del alto/ancho de la página) que ocupa el
+# cuadro de contenido debajo de la cabecera en estos manuales. Se usa para
+# los anexos: formularios con tablas que el OCR no puede reconstruir.
+BODY_CROP = (0.08, 0.228, 0.93, 0.86)  # izquierda, arriba, derecha, abajo
+
+
+def es_pagina_anexo(body_text: str) -> bool:
+    """Las páginas "ANEXO N" son formularios (tablas, líneas de puntos)
+    que como texto quedan vacíos: se insertan como imagen bajo la cabecera."""
+    primeras = [ln.strip() for ln in body_text.splitlines() if ln.strip()][:3]
+    return any(re.match(r"^ANEXO\s*\d*\s*$", ln, re.I) for ln in primeras)
+
+
+def add_body_image(doc, image_path):
+    """Inserta solo la zona del cuerpo de la página (bajo la cabecera)."""
+    from PIL import Image
+    section = doc.sections[-1]
+    usable_w = section.page_width - section.left_margin - section.right_margin
+    im = Image.open(image_path)
+    w, h = im.size
+    l, t, r, b = BODY_CROP
+    recorte = im.crop((int(w * l), int(h * t), int(w * r), int(h * b)))
+    tmp_path = Path(str(image_path) + ".body.png")
+    recorte.save(tmp_path)
+    doc.add_picture(str(tmp_path), width=usable_w)
+
+
 def add_page_break(doc):
     doc.add_page_break()
 
@@ -791,13 +854,19 @@ def parse_page_range(spec, total_pages):
 
 
 def completar_numeros_de_pagina(lista_fields):
-    """Rellena 'pagina' ("k/N") en las cabeceras reconocidas que quedaron
-    sin número, contando las páginas reconocidas del documento."""
+    """Renumera 'pagina' ("k/N") en las cabeceras reconocidas: k es el
+    orden de la página entre las reconocidas (el OCR confunde "7/7" con
+    "1/7" o se come la línea entera) y N el total que más se repite en lo
+    leído, o el número de páginas reconocidas si no se leyó ninguno."""
     reconocidas = [f for f in lista_fields if f is not None]
-    total = len(reconocidas)
+    totales = []
+    for f in reconocidas:
+        m = re.fullmatch(r"\s*\d{1,2}\s*/\s*(\d{1,2})\s*", f.get("pagina") or "")
+        if m:
+            totales.append(m.group(1))
+    total = max(set(totales), key=totales.count) if totales else str(len(reconocidas))
     for k, f in enumerate(reconocidas, start=1):
-        if not f.get("pagina"):
-            f["pagina"] = f"{k}/{total}"
+        f["pagina"] = f"{k}/{total}"
 
 
 def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False, verbose=True):
@@ -841,6 +910,9 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
 
             add_header_table(doc, fields)
             doc.add_paragraph()  # espaciador
+            if es_pagina_anexo(body_text):
+                add_body_image(doc, img_path)
+                continue
             blocks = parse_body(body_text)
             add_content_box(doc, blocks)
 
