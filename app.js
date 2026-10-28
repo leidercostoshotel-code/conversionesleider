@@ -744,6 +744,25 @@ function buildContentBox(blocks) {
 // los anexos: formularios con tablas que el OCR no puede reconstruir.
 const BODY_CROP = [0.08, 0.228, 0.93, 0.86]; // izquierda, arriba, derecha, abajo
 
+// Marcas de las páginas de la intranet que envuelven al manual (portada con
+// el menú y página final con el pie del sitio): no llevan contenido y, a
+// pedido del usuario, no se incluyen en el .docx.
+const INTRANET_MARKERS = [
+  /Intranet corporativa/i,
+  /Cerrar sesi[oó]n/i,
+  /Todos los derechos reservados/i,
+  /Anexos telef[oó]nicos/i,
+  /Procedimientos, eventos y comunicaciones/i,
+];
+
+// Página sin cabecera que además es solo "cáscara" de la intranet
+// (menú/portada o pie del sitio), o que casi no tiene texto.
+function esPaginaIntranet(rawText, textLimpio) {
+  if (/SPI\s+SWISS/i.test(rawText)) return false;
+  if (INTRANET_MARKERS.some((p) => p.test(rawText))) return true;
+  return textLimpio.replace(/\s+/g, " ").trim().length < 120;
+}
+
 // Las páginas "ANEXO N" son formularios (tablas, líneas de puntos) que como
 // texto quedan vacíos: se insertan como imagen bajo la cabecera.
 function esPaginaAnexo(bodyText) {
@@ -869,14 +888,20 @@ async function convertPdf(file, pageRangeSpec, onLog) {
     const text = stripNoise(rawText);
     const [fields, bodyText] = parseHeader(text);
     if (fields !== null && numeroArchivo) fields.numero = numeroArchivo;
-    paginas.push({ p, idx, canvas, text, fields, bodyText });
+    if (fields === null && esPaginaIntranet(rawText, text)) {
+      onLog(`  · Página ${p} omitida (portada/pie de la intranet, sin contenido).`);
+      continue;
+    }
+    paginas.push({ p, canvas, text, fields, bodyText });
   }
   completarNumerosDePagina(paginas.map((pg) => pg.fields));
 
-  for (const { p, idx, canvas, text, fields, bodyText } of paginas) {
-    if (idx > 0) {
+  let primera = true;
+  for (const { p, canvas, text, fields, bodyText } of paginas) {
+    if (!primera) {
       allChildren.push(new Paragraph({ children: [new PageBreak()] }));
     }
+    primera = false;
 
     if (fields === null) {
       onLog(`  ⚠ No se reconoció la cabecera en la página ${p} -> se insertó como imagen.`);
