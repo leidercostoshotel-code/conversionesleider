@@ -45,18 +45,18 @@ FONT_REG, FONT_BOLD = "Times-Roman", "Times-Bold"
 # Etiquetas del cuadro de cabecera tal como las escribe el .docx (o como
 # las escribiría una persona a mano).
 DOCX_HEADER_LABELS = [
-    ("numero", re.compile(r"^n[°º*o]?\s*[:.]", re.I)),
-    ("pagina", re.compile(r"^p[aá]gina\s*:?", re.I)),
-    ("area", re.compile(r"^[aá]rea\s*:?", re.I)),
-    ("campo", re.compile(r"^campo\s*:?", re.I)),
-    ("norma_titulo", re.compile(r"^norma\s*:?", re.I)),
-    ("fecha_elaboracion", re.compile(r"^fecha de elaboraci[oó]n\s*:?", re.I)),
-    ("reemplaza", re.compile(r"^reemplaza a la norma del\s*:?", re.I)),
-    ("elaborada_por", re.compile(r"^elaborada? por\s*:?", re.I)),
-    ("revisado_por", re.compile(r"^revisado por\s*:?", re.I)),
-    ("referencia_corporativa", re.compile(r"^referencia corporativa(?: sl)?\s*:?", re.I)),
-    ("revisado_aprobado", re.compile(r"^revisado y aprobado por\s*:?", re.I)),
-    ("autorizado_por", re.compile(r"^autorizado por el gerente general\s*:?", re.I)),
+    ("numero", re.compile(r"\bn(?:[°º*]|o\b)\s*[:.]?\s*(?=\d{2}\.\d{2})", re.I)),
+    ("pagina", re.compile(r"\bp[aá]gina\s*:?", re.I)),
+    ("area", re.compile(r"(?:^|\s)[aá]rea\s*:", re.I)),
+    ("campo", re.compile(r"\bcampo\s*:", re.I)),
+    ("norma_titulo", re.compile(r"\bnorma\s*:", re.I)),
+    ("fecha_elaboracion", re.compile(r"\bfecha de elaboraci[oó]n\s*:?", re.I)),
+    ("reemplaza", re.compile(r"\breemplaza a la norma del\s*:?", re.I)),
+    ("elaborada_por", re.compile(r"\belaborad[ao](?: por)?\s*:", re.I)),
+    ("revisado_por", re.compile(r"\brevisad[ao](?: por)?\s*:", re.I)),
+    ("referencia_corporativa", re.compile(r"\breferencia corporativa(?: sl)?\s*:?", re.I)),
+    ("revisado_aprobado", re.compile(r"\brevisado y aprobado por\s*:?", re.I)),
+    ("autorizado_por", re.compile(r"\bautorizado por el gerente general\s*:?", re.I)),
 ]
 
 
@@ -147,24 +147,38 @@ def limpiar_valor(v):
 
 
 def parse_header_lineas(lineas):
+    """Reconoce "Etiqueta : valor" en una lista de líneas. Las etiquetas
+    pueden venir en medio de una línea (p. ej. "SPI SWISSÔTEL LIMA N°
+    04.01.31.04" o "Manual de Procedimientos Página: 1/2"): cada línea se
+    parte donde empieza una etiqueta y el valor es lo que hay hasta la
+    siguiente. Devuelve None si no aparece N° ni Página."""
     f, encontrado = {}, 0
     for raw in lineas:
         ln = raw.strip()
         if not ln:
             continue
-        if re.match(r"^SPI\s+SWISS", ln, re.I) or re.match(r"^Manual de Procedimientos", ln, re.I):
+        if re.search(r"SPI\s+SWISS", ln, re.I) or re.search(r"Manual de Procedimientos", ln, re.I):
             encontrado += 1
-            continue
-        matched = False
+        hits = []
         for key, rx in DOCX_HEADER_LABELS:
-            m = rx.match(ln)
-            if m:
-                f[key] = limpiar_valor(ln[m.end():])
-                encontrado += 1
-                matched = True
-                break
-        if not matched and "norma_titulo" in f and not f.get("fecha_elaboracion"):
-            f["norma_titulo"] = (f["norma_titulo"] + " " + ln).strip()
+            for m in rx.finditer(ln):
+                hits.append((m.start(), m.end(), key))
+        hits.sort()
+        # Una etiqueta contenida en otra ("revisado por" dentro de "revisado
+        # y aprobado por") no cuenta.
+        limpios = [h for h in hits
+                   if not any(o is not h and o[0] <= h[0] and o[1] >= h[1] and (o[1] - o[0]) > (h[1] - h[0])
+                              for o in hits)]
+        if not limpios:
+            if ("norma_titulo" in f and not f.get("fecha_elaboracion")
+                    and not re.search(r"SPI\s+SWISS|Manual de Procedimientos", ln, re.I)):
+                f["norma_titulo"] = (f["norma_titulo"] + " " + ln).strip()  # título en 2 líneas
+            continue
+        for i, (start, end, key) in enumerate(limpios):
+            fin = limpios[i + 1][0] if i + 1 < len(limpios) else len(ln)
+            if key not in f:
+                f[key] = limpiar_valor(ln[end:fin])
+            encontrado += 1
     if "numero" not in f and "pagina" not in f:
         return None
     return f if encontrado >= 3 else None
@@ -240,7 +254,7 @@ def paginas_desde_docx(elementos):
         elif el["type"] == "table":
             celdas = [p for row in el["rows"] for cell in row for p in cell]
             lineas = [p["text"] for p in celdas if p["type"] == "paragraph"]
-            fields = parse_header_lineas(lineas) if len(el["rows"]) >= 2 else None
+            fields = parse_header_lineas(lineas)
             if fields:
                 cerrar()
                 actual = {"fields": fields, "blocks": []}
@@ -305,16 +319,23 @@ def envolver_texto(texto, font, size, max_w):
 
 
 class PdfEscritor:
-    def __init__(self, c):
+    def __init__(self, c, numerar=None):
         self.c = c
         self.y = 0
         self.primera = True
+        self.numerar = numerar  # función k -> "k/N" cuando se numera en dos pasadas
+        self.k = 0              # página actual dentro del documento
 
     def nueva_pagina(self):
         if not self.primera:
             self.c.showPage()
         self.primera = False
         self.y = PDF_PAGE_H - PDF_MARGIN
+        self.k += 1
+
+    def campos_pagina(self, f):
+        """Campos de cabecera con el número de página de la hoja actual."""
+        return dict(f, pagina=self.numerar(self.k)) if self.numerar else f
 
     def _texto(self, s, x, y, font, size):
         self.c.setFont(font, size)
@@ -325,6 +346,7 @@ class PdfEscritor:
         self.c.rect(x, y, w, h)
 
     def dibujar_cabecera(self, f):
+        f = self.campos_pagina(f)
         x0, x_mid, top = PDF_BOX_X, PDF_BOX_X + PDF_HDR_LEFT_W, self.y
         izq1 = [("SPI SWISSÔTEL LIMA", FONT_BOLD, 11), ("Manual de Procedimientos", FONT_REG, 10)]
         der1 = [(f"N°  : {f.get('numero', '')}", FONT_BOLD, 10), (f"Página: {f.get('pagina', '')}", FONT_REG, 10)]
@@ -464,15 +486,10 @@ class PdfEscritor:
 # 4. Orquestación
 # ------------------------------------------------------------------ #
 
-def convert(docx_path: Path, out_path: Path, verbose=True):
-    elementos = leer_docx(docx_path)
-    paginas = paginas_desde_docx(elementos)
-    if not paginas:
-        print(f"  ! {docx_path.name}: el Word no tiene contenido reconocible.", file=sys.stderr)
-        return
-    c = rl_canvas.Canvas(str(out_path), pagesize=A4)
-    c.setTitle(docx_path.stem)
-    esc = PdfEscritor(c)
+def renderizar_pdf(paginas, destino, titulo, numerar=None, verbose=True):
+    c = rl_canvas.Canvas(destino, pagesize=A4)
+    c.setTitle(titulo)
+    esc = PdfEscritor(c, numerar)
     for n, pg in enumerate(paginas, start=1):
         esc.nueva_pagina()
         if "fullImage" in pg:
@@ -483,13 +500,31 @@ def convert(docx_path: Path, out_path: Path, verbose=True):
         if pg["fields"]:
             if verbose:
                 print(f"  ✓ Página {n}: cabecera (N° {pg['fields'].get('numero', '?')}, "
-                      f"página {pg['fields'].get('pagina', '?')}).")
+                      f"página {esc.campos_pagina(pg['fields']).get('pagina', '?')}).")
             esc.dibujar_cabecera(pg["fields"])
         elif verbose:
             print(f"  ⚠ Página {n}: sin cuadro de cabecera reconocible; se escribe el texto con el mismo formato.")
         if pg["blocks"]:
             esc.dibujar_contenido(pg["blocks"], pg["fields"])
     c.save()
+    return esc.k
+
+
+def convert(docx_path: Path, out_path: Path, verbose=True):
+    elementos = leer_docx(docx_path)
+    paginas = paginas_desde_docx(elementos)
+    if not paginas:
+        print(f"  ! {docx_path.name}: el Word no tiene contenido reconocible.", file=sys.stderr)
+        return
+    # Un Word con una sola cabecera y un cuerpo largo (escrito a mano) se
+    # reparte en varias hojas: primero se arma el PDF "en borrador" para saber
+    # cuántas salen, y luego el definitivo numerando "1/N ... N/N".
+    numerar = None
+    if sum(1 for pg in paginas if pg.get("fields")) == 1:
+        total = renderizar_pdf(paginas, io.BytesIO(), docx_path.stem, None, verbose=False)
+        if total > 1:
+            numerar = lambda k, total=total: f"{k}/{total}"  # noqa: E731
+    renderizar_pdf(paginas, str(out_path), docx_path.stem, numerar, verbose)
     if verbose:
         print(f"  -> {out_path}")
 

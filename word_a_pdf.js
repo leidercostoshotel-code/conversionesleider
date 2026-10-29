@@ -27,18 +27,18 @@ const PDF_INDENT_LETTER = 25; // 500 twips
 // Etiquetas del cuadro de cabecera tal como las escribe el .docx (o como
 // las escribiría una persona a mano). Se comparan sin tildes ni mayúsculas.
 const DOCX_HEADER_LABELS = [
-  ["numero", /^n[°º*o]?\s*[:.]/i],
-  ["pagina", /^p[aá]gina\s*:?/i],
-  ["area", /^[aá]rea\s*:?/i],
-  ["campo", /^campo\s*:?/i],
-  ["norma_titulo", /^norma\s*:?/i],
-  ["fecha_elaboracion", /^fecha de elaboraci[oó]n\s*:?/i],
-  ["reemplaza", /^reemplaza a la norma del\s*:?/i],
-  ["elaborada_por", /^elaborada? por\s*:?/i],
-  ["revisado_por", /^revisado por\s*:?/i],
-  ["referencia_corporativa", /^referencia corporativa(?: sl)?\s*:?/i],
-  ["revisado_aprobado", /^revisado y aprobado por\s*:?/i],
-  ["autorizado_por", /^autorizado por el gerente general\s*:?/i],
+  ["numero", /\bn(?:[°º*]|o\b)\s*[:.]?\s*(?=\d{2}\.\d{2})/i],
+  ["pagina", /\bp[aá]gina\s*:?/i],
+  ["area", /(?:^|\s)[aá]rea\s*:/i],
+  ["campo", /\bcampo\s*:/i],
+  ["norma_titulo", /\bnorma\s*:/i],
+  ["fecha_elaboracion", /\bfecha de elaboraci[oó]n\s*:?/i],
+  ["reemplaza", /\breemplaza a la norma del\s*:?/i],
+  ["elaborada_por", /\belaborad[ao](?: por)?\s*:/i],
+  ["revisado_por", /\brevisad[ao](?: por)?\s*:/i],
+  ["referencia_corporativa", /\breferencia corporativa(?: sl)?\s*:?/i],
+  ["revisado_aprobado", /\brevisado y aprobado por\s*:?/i],
+  ["autorizado_por", /\bautorizado por el gerente general\s*:?/i],
 ];
 
 // --- 1. Lectura del .docx -------------------------------------------
@@ -154,26 +154,43 @@ function limpiarValor(v) {
 
 // Reconoce "Etiqueta : valor" en una lista de líneas. Devuelve null si no
 // aparece N° ni Página (entonces no es un cuadro de cabecera).
+// Reconoce "Etiqueta : valor" en una lista de líneas. Las etiquetas pueden
+// venir en medio de una línea (p. ej. "SPI SWISSÔTEL LIMA N° 04.01.31.04" o
+// "Manual de Procedimientos Página: 1/2"): cada línea se parte en los
+// puntos donde empieza una etiqueta y el valor es lo que hay hasta la
+// siguiente. Devuelve null si no aparece N° ni Página.
 function parseHeaderLineas(lineas) {
   const f = {};
   let encontrado = 0;
   for (const raw of lineas) {
     const ln = raw.trim();
     if (!ln) continue;
-    if (/^SPI\s+SWISS/i.test(ln) || /^Manual de Procedimientos/i.test(ln)) { encontrado++; continue; }
-    let matched = false;
+    if (/SPI\s+SWISS/i.test(ln) || /Manual de Procedimientos/i.test(ln)) encontrado++;
+    // Todas las etiquetas presentes en la línea, ordenadas por posición.
+    const hits = [];
     for (const [key, re] of DOCX_HEADER_LABELS) {
-      const m = re.exec(ln);
-      if (m) {
-        f[key] = limpiarValor(ln.slice(m[0].length));
-        encontrado++;
-        matched = true;
-        break;
+      const g = new RegExp(re.source, "gi");
+      let m;
+      while ((m = g.exec(ln)) !== null) {
+        hits.push({ key, start: m.index, end: m.index + m[0].length });
+        if (m[0].length === 0) g.lastIndex++;
       }
     }
-    if (!matched && f.norma_titulo !== undefined && !f.fecha_elaboracion) {
-      // continuación del título de la norma en otra línea
-      f.norma_titulo = (f.norma_titulo + " " + ln).trim();
+    hits.sort((a, b) => a.start - b.start);
+    // Una etiqueta contenida en otra ("revisado por" dentro de "revisado y
+    // aprobado por") no cuenta.
+    const limpios = hits.filter((h, i) => !hits.some((o, j) => j !== i && o.start <= h.start && o.end >= h.end && (o.end - o.start) > (h.end - h.start)));
+    if (!limpios.length) {
+      if (f.norma_titulo !== undefined && !f.fecha_elaboracion && !/SPI\s+SWISS|Manual de Procedimientos/i.test(ln)) {
+        f.norma_titulo = (f.norma_titulo + " " + ln).trim(); // título en 2 líneas
+      }
+      continue;
+    }
+    for (let i = 0; i < limpios.length; i++) {
+      const h = limpios[i];
+      const fin = i + 1 < limpios.length ? limpios[i + 1].start : ln.length;
+      if (f[h.key] === undefined) f[h.key] = limpiarValor(ln.slice(h.end, fin));
+      encontrado++;
     }
   }
   if (f.numero === undefined && f.pagina === undefined) return null;
@@ -243,7 +260,7 @@ function paginasDesdeDocx(elementos) {
     if (el.type === "table") {
       const celdas = el.rows.flat();
       const lineas = celdas.flat().filter((p) => p.type === "paragraph").map((p) => p.text);
-      const fields = el.rows.length >= 2 ? parseHeaderLineas(lineas) : null;
+      const fields = parseHeaderLineas(lineas);
       if (fields) {
         cerrar();
         actual = { fields, blocks: [] };
@@ -327,16 +344,26 @@ class PdfEscritor {
     this.fonts = fonts; // { regular, bold }
     this.page = null;
     this.y = 0;
+    this.numerar = null; // función (k) -> "k/N" cuando se numera en dos pasadas
+    this.k = 0;          // página actual dentro del documento
   }
 
   nuevaPagina() {
     this.page = this.pdf.addPage([PDF_PAGE_W, PDF_PAGE_H]);
     this.y = PDF_PAGE_H - PDF_MARGIN;
+    this.k++;
     return this.page;
+  }
+
+  // Campos de cabecera con el número de página que corresponde a la hoja
+  // actual (cuando el documento se numera en dos pasadas).
+  camposPagina(f) {
+    return this.numerar ? { ...f, pagina: this.numerar(this.k) } : f;
   }
 
   // Dibuja el cuadro de cabecera en la parte superior de la página actual.
   dibujarCabecera(f) {
+    f = this.camposPagina(f);
     const { regular, bold } = this.fonts;
     const x0 = PDF_BOX_X;
     const xMid = x0 + PDF_HDR_LEFT_W;
@@ -509,12 +536,30 @@ async function convertDocxToPdf(file, onLog) {
   const paginas = paginasDesdeDocx(elementos);
   if (!paginas.length) throw new Error("El Word no tiene contenido reconocible.");
 
+  // Un Word con una sola cabecera y un cuerpo largo (escrito a mano) se
+  // reparte en varias hojas: primero se arma el PDF "en borrador" para saber
+  // cuántas salen, y luego el definitivo numerando "1/N ... N/N".
+  const conCabecera = paginas.filter((pg) => pg.fields);
+  let numerar = null;
+  if (conCabecera.length === 1) {
+    const borrador = await renderizarPdf(paginas, () => {}, null);
+    const total = borrador.getPageCount();
+    if (total > 1) numerar = (k) => `${k}/${total}`;
+  }
+  const pdfDoc = await renderizarPdf(paginas, onLog, numerar);
+  pdfDoc.setTitle(file.name.replace(/\.docx$/i, ""));
+  const bytes = await pdfDoc.save();
+  return new Blob([bytes], { type: "application/pdf" });
+}
+
+async function renderizarPdf(paginas, onLog, numerar) {
   const pdfDoc = await PDFLib.PDFDocument.create();
   const fonts = {
     regular: await pdfDoc.embedFont(PDFLib.StandardFonts.TimesRoman),
     bold: await pdfDoc.embedFont(PDFLib.StandardFonts.TimesRomanBold),
   };
   const esc = new PdfEscritor(pdfDoc, fonts);
+  esc.numerar = numerar;
 
   let n = 0;
   for (const pg of paginas) {
@@ -526,15 +571,12 @@ async function convertDocxToPdf(file, onLog) {
       continue;
     }
     if (pg.fields) {
-      onLog(`  ✓ Página ${n}: cabecera (N° ${pg.fields.numero || "?"}, página ${pg.fields.pagina || "?"}).`);
+      onLog(`  ✓ Página ${n}: cabecera (N° ${pg.fields.numero || "?"}, página ${esc.camposPagina(pg.fields).pagina || "?"}).`);
       esc.dibujarCabecera(pg.fields);
     } else {
       onLog(`  ⚠ Página ${n}: sin cuadro de cabecera reconocible; se escribe el texto con el mismo formato.`);
     }
     if (pg.blocks.length) await esc.dibujarContenido(pg.blocks, pg.fields);
   }
-
-  pdfDoc.setTitle(file.name.replace(/\.docx$/i, ""));
-  const bytes = await pdfDoc.save();
-  return new Blob([bytes], { type: "application/pdf" });
+  return pdfDoc;
 }
