@@ -34,36 +34,35 @@ const DPI = 300;
 const ELABORADA_POR_FIJO = "JACH";
 const REVISADO_POR_FIJO = "GPL";
 const RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"];
-// Cargos que cambiaron de nombre: se reescriben en la lista de responsables
-// (pedido del usuario). Se comparan sin mayúsculas ni guiones.
-const RENOMBRES_RESPONSABLES = [
-  ["gerente de operaciones", "Director de Operaciones"],
+// Cargos que van juntos en la lista de responsables (pedido del usuario):
+// si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
+// primero que estaba. Se comparan sin mayúsculas ni guiones.
+const PARES_RESPONSABLES = [
+  ["Contralor", "Sub Contralor"],
+  ["Director de Operaciones", "Gerente de Operaciones"],
 ];
 
 function claveResponsable(n) {
   return n.trim().toLowerCase().replace(/-/g, " ").replace(/\s+/g, " ");
 }
 
-// Normaliza la lista de responsables: renombra cargos, quita duplicados y,
-// si `fijosPrimero`, antepone siempre Contralor y Sub Contralor; si no, solo
-// garantiza que junto a Contralor aparezca Sub Contralor.
+// Normaliza la lista de responsables: completa los cargos que van juntos,
+// quita duplicados y, si `fijosPrimero`, antepone siempre Contralor y
+// Sub Contralor.
 function normalizarResponsables(names, fijosPrimero) {
-  const renombrados = names.map((n) => {
-    const k = claveResponsable(n);
-    const r = RENOMBRES_RESPONSABLES.find(([de]) => de === k);
-    return r ? r[1] : n.trim();
-  });
-  let lista;
+  let lista = names.map((n) => n.trim()).filter(Boolean);
+  for (const grupo of PARES_RESPONSABLES) {
+    const claves = grupo.map(claveResponsable);
+    const idx = lista.findIndex((n) => claves.includes(claveResponsable(n)));
+    if (idx < 0) continue;
+    lista = [...lista.slice(0, idx), ...grupo, ...lista.slice(idx).filter((n) => !claves.includes(claveResponsable(n)))];
+  }
   if (fijosPrimero) {
-    const fijos = new Set(RESPONSABLES_FIJOS.map(claveResponsable));
-    lista = [...RESPONSABLES_FIJOS, ...renombrados.filter((n) => !fijos.has(claveResponsable(n)))];
-  } else {
-    lista = [...renombrados];
-    const i = lista.findIndex((n) => claveResponsable(n) === "contralor");
-    if (i >= 0 && !lista.some((n) => claveResponsable(n) === "sub contralor")) lista.splice(i + 1, 0, "Sub Contralor");
+    const fijos = RESPONSABLES_FIJOS.map(claveResponsable);
+    lista = [...RESPONSABLES_FIJOS, ...lista.filter((n) => !fijos.includes(claveResponsable(n)))];
   }
   const vistos = new Set();
-  return lista.filter((n) => n && !vistos.has(claveResponsable(n)) && vistos.add(claveResponsable(n)));
+  return lista.filter((n) => !vistos.has(claveResponsable(n)) && vistos.add(claveResponsable(n)));
 }
 
 function fechaDeHoy() {

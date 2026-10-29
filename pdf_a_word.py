@@ -87,10 +87,12 @@ DPI = 300
 ELABORADA_POR_FIJO = "JACH"
 REVISADO_POR_FIJO = "GPL"
 RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
-# Cargos que cambiaron de nombre: se reescriben en la lista de responsables
-# (pedido del usuario). Se comparan sin mayúsculas ni guiones.
-RENOMBRES_RESPONSABLES = [
-    ("gerente de operaciones", "Director de Operaciones"),
+# Cargos que van juntos en la lista de responsables (pedido del usuario):
+# si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
+# primero que estaba. Se comparan sin mayúsculas ni guiones.
+PARES_RESPONSABLES = [
+    ["Contralor", "Sub Contralor"],
+    ["Director de Operaciones", "Gerente de Operaciones"],
 ]
 
 
@@ -99,26 +101,23 @@ def clave_responsable(n):
 
 
 def normalizar_responsables(names, fijos_primero):
-    """Renombra cargos, quita duplicados y, si `fijos_primero`, antepone
-    siempre Contralor y Sub Contralor; si no, solo garantiza que junto a
-    Contralor aparezca Sub Contralor. (Misma lógica en word_a_pdf.py.)"""
-    renombrados = []
-    for n in names:
-        k = clave_responsable(n)
-        nuevo = next((a for de, a in RENOMBRES_RESPONSABLES if de == k), None)
-        renombrados.append(nuevo or n.strip())
+    """Completa los cargos que van juntos, quita duplicados y, si
+    `fijos_primero`, antepone siempre Contralor y Sub Contralor. (Misma
+    lógica en word_a_pdf.py.)"""
+    lista = [n.strip() for n in names if n.strip()]
+    for grupo in PARES_RESPONSABLES:
+        claves = [clave_responsable(g) for g in grupo]
+        idx = next((i for i, n in enumerate(lista) if clave_responsable(n) in claves), None)
+        if idx is None:
+            continue
+        lista = lista[:idx] + list(grupo) + [n for n in lista[idx:] if clave_responsable(n) not in claves]
     if fijos_primero:
-        fijos = {clave_responsable(x) for x in RESPONSABLES_FIJOS}
-        lista = RESPONSABLES_FIJOS + [n for n in renombrados if clave_responsable(n) not in fijos]
-    else:
-        lista = list(renombrados)
-        idx = next((i for i, n in enumerate(lista) if clave_responsable(n) == "contralor"), None)
-        if idx is not None and not any(clave_responsable(n) == "sub contralor" for n in lista):
-            lista.insert(idx + 1, "Sub Contralor")
+        fijos = [clave_responsable(x) for x in RESPONSABLES_FIJOS]
+        lista = RESPONSABLES_FIJOS + [n for n in lista if clave_responsable(n) not in fijos]
     vistos, salida = set(), []
     for n in lista:
         k = clave_responsable(n)
-        if n and k not in vistos:
+        if k not in vistos:
             vistos.add(k)
             salida.append(n)
     return salida

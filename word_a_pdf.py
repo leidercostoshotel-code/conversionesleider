@@ -141,12 +141,13 @@ def leer_docx(path):
 # 2. Interpretación: cabecera y cuerpo
 # ------------------------------------------------------------------ #
 
-# Responsables: mismos renombres y reglas que en pdf_a_word.py (mantener en
-# sincronía). Aquí no se anteponen los fijos: se respeta el Word, solo se
-# renombra, se quitan duplicados y se añade Sub Contralor junto a Contralor.
+# Responsables: mismas reglas que en pdf_a_word.py (mantener en sincronía).
+# Aquí no se anteponen los fijos: se respeta el orden del Word, solo se
+# completan los cargos que van juntos y se quitan duplicados.
 RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
-RENOMBRES_RESPONSABLES = [
-    ("gerente de operaciones", "Director de Operaciones"),
+PARES_RESPONSABLES = [
+    ["Contralor", "Sub Contralor"],
+    ["Director de Operaciones", "Gerente de Operaciones"],
 ]
 
 
@@ -155,23 +156,20 @@ def clave_responsable(n):
 
 
 def normalizar_responsables(names, fijos_primero):
-    renombrados = []
-    for n in names:
-        k = clave_responsable(n)
-        nuevo = next((a for de, a in RENOMBRES_RESPONSABLES if de == k), None)
-        renombrados.append(nuevo or n.strip())
+    lista = [n.strip() for n in names if n.strip()]
+    for grupo in PARES_RESPONSABLES:
+        claves = [clave_responsable(g) for g in grupo]
+        idx = next((i for i, n in enumerate(lista) if clave_responsable(n) in claves), None)
+        if idx is None:
+            continue
+        lista = lista[:idx] + list(grupo) + [n for n in lista[idx:] if clave_responsable(n) not in claves]
     if fijos_primero:
-        fijos = {clave_responsable(x) for x in RESPONSABLES_FIJOS}
-        lista = RESPONSABLES_FIJOS + [n for n in renombrados if clave_responsable(n) not in fijos]
-    else:
-        lista = list(renombrados)
-        idx = next((i for i, n in enumerate(lista) if clave_responsable(n) == "contralor"), None)
-        if idx is not None and not any(clave_responsable(n) == "sub contralor" for n in lista):
-            lista.insert(idx + 1, "Sub Contralor")
+        fijos = [clave_responsable(x) for x in RESPONSABLES_FIJOS]
+        lista = RESPONSABLES_FIJOS + [n for n in lista if clave_responsable(n) not in fijos]
     vistos, salida = set(), []
     for n in lista:
         k = clave_responsable(n)
-        if n and k not in vistos:
+        if k not in vistos:
             vistos.add(k)
             salida.append(n)
     return salida
