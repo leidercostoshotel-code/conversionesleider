@@ -955,6 +955,40 @@ const pageRangeInput = document.getElementById("pageRange");
 const logEl = document.getElementById("log");
 const downloadsEl = document.getElementById("downloads");
 const downloadListEl = document.getElementById("downloadList");
+const zipRowEl = document.getElementById("zipRow");
+const zipBtn = document.getElementById("zipBtn");
+const zipInfoEl = document.getElementById("zipInfo");
+
+// Documentos generados en la última conversión, para el ZIP.
+let generados = [];
+
+function actualizarZip() {
+  zipRowEl.hidden = generados.length < 2;
+  zipInfoEl.textContent = generados.length >= 2 ? `${generados.length} archivos` : "";
+}
+
+zipBtn.addEventListener("click", async () => {
+  if (!generados.length) return;
+  zipBtn.disabled = true;
+  zipInfoEl.textContent = "Armando el ZIP...";
+  try {
+    const zip = new JSZip();
+    for (const { name, blob } of generados) zip.file(name, blob);
+    const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(zipBlob);
+    a.download = `documentos_convertidos_${fechaDeHoy().replace(/\./g, "-")}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    zipInfoEl.textContent = `${generados.length} archivos`;
+  } catch (err) {
+    console.error(err);
+    zipInfoEl.textContent = `No se pudo armar el ZIP: ${err.message || err}`;
+  } finally {
+    zipBtn.disabled = false;
+  }
+});
 
 let selectedFiles = [];
 
@@ -1028,6 +1062,8 @@ convertBtn.addEventListener("click", async () => {
   logEl.innerHTML = "";
   downloadListEl.innerHTML = "";
   downloadsEl.hidden = true;
+  generados = [];
+  actualizarZip();
 
   const pageRangeSpec = pageRangeInput.value.trim();
 
@@ -1054,6 +1090,8 @@ convertBtn.addEventListener("click", async () => {
       li.appendChild(a);
       downloadListEl.appendChild(li);
       downloadsEl.hidden = false;
+      generados.push({ name: outName, blob });
+      actualizarZip();
 
       log.line(`Listo -> ${outName}`);
     } catch (err) {

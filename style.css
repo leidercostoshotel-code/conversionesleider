@@ -130,6 +130,10 @@ button#convertBtn:disabled {
   margin-bottom: 0.5rem;
 }
 
+#downloads .zip-row { margin: 0 0 1rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+#downloads .zip-row[hidden] { display: none; }
+#downloads .zip-info { color: var(--muted); font-size: 0.9rem; }
+
 #downloads a {
   display: inline-block;
   background: var(--accent);
