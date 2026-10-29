@@ -34,6 +34,37 @@ const DPI = 300;
 const ELABORADA_POR_FIJO = "JACH";
 const REVISADO_POR_FIJO = "GPL";
 const RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"];
+// Cargos que cambiaron de nombre: se reescriben en la lista de responsables
+// (pedido del usuario). Se comparan sin mayúsculas ni guiones.
+const RENOMBRES_RESPONSABLES = [
+  ["gerente de operaciones", "Director de Operaciones"],
+];
+
+function claveResponsable(n) {
+  return n.trim().toLowerCase().replace(/-/g, " ").replace(/\s+/g, " ");
+}
+
+// Normaliza la lista de responsables: renombra cargos, quita duplicados y,
+// si `fijosPrimero`, antepone siempre Contralor y Sub Contralor; si no, solo
+// garantiza que junto a Contralor aparezca Sub Contralor.
+function normalizarResponsables(names, fijosPrimero) {
+  const renombrados = names.map((n) => {
+    const k = claveResponsable(n);
+    const r = RENOMBRES_RESPONSABLES.find(([de]) => de === k);
+    return r ? r[1] : n.trim();
+  });
+  let lista;
+  if (fijosPrimero) {
+    const fijos = new Set(RESPONSABLES_FIJOS.map(claveResponsable));
+    lista = [...RESPONSABLES_FIJOS, ...renombrados.filter((n) => !fijos.has(claveResponsable(n)))];
+  } else {
+    lista = [...renombrados];
+    const i = lista.findIndex((n) => claveResponsable(n) === "contralor");
+    if (i >= 0 && !lista.some((n) => claveResponsable(n) === "sub contralor")) lista.splice(i + 1, 0, "Sub Contralor");
+  }
+  const vistos = new Set();
+  return lista.filter((n) => n && !vistos.has(claveResponsable(n)) && vistos.add(claveResponsable(n)));
+}
 
 function fechaDeHoy() {
   const d = new Date();
@@ -702,11 +733,7 @@ function buildContentBox(blocks) {
         break;
       case "responsables":
         children.push(makeParagraph("RESPONSABLES:", { bold: true }));
-        {
-          const fijosNorm = new Set(RESPONSABLES_FIJOS.map((x) => x.toLowerCase().replace(/-/g, " ")));
-          const otros = b.names.filter((n) => !fijosNorm.has(n.trim().toLowerCase().replace(/-/g, " ")));
-          for (const name of [...RESPONSABLES_FIJOS, ...otros]) children.push(makeParagraph(name));
-        }
+        for (const name of normalizarResponsables(b.names, true)) children.push(makeParagraph(name));
         break;
       case "subheading":
         children.push(makeParagraph(b.text, { bold: true }));
@@ -743,6 +770,25 @@ function buildContentBox(blocks) {
 // cuadro de contenido debajo de la cabecera en estos manuales. Se usa para
 // los anexos: formularios con tablas que el OCR no puede reconstruir.
 const BODY_CROP = [0.08, 0.228, 0.93, 0.86]; // izquierda, arriba, derecha, abajo
+
+// Quita del texto OCR de una página las líneas del cuadro de cabecera que no
+// se pudo interpretar: se salta todo hasta la primera línea que parezca
+// cuerpo (marcador de sección, ítem o línea larga), mirando como mucho las
+// 14 primeras líneas.
+function cuerpoSinCabecera(text) {
+  const lines = text.split("\n");
+  let start = 0;
+  for (let i = 0; i < Math.min(lines.length, 14); i++) {
+    const ln = lines[i].trim();
+    if (!ln) continue;
+    const esCuerpo = /^(OBJETIVOS?|RESPONSABLES?|PASOS A SEGUIR|POL[IÍ]TICAS)/i.test(ln)
+      || NUM_ITEM_RE.test(ln) || BULLET_ITEM_RE.test(ln) || ln.length >= 60;
+    const esCabecera = /SPI\s+SWISS|Manual de Procedimientos|P?[aá]gina\s*:|Fecha de elaboraci|Reemplaza a la norma|Elaborada por|Autorizado por|^Area|^[AÁ]rea|^Campo|^Norma/i.test(ln);
+    if (esCuerpo && !esCabecera) { start = i; break; }
+    start = i + 1;
+  }
+  return lines.slice(start).join("\n");
+}
 
 // Marcas de las páginas de la intranet que envuelven al manual (portada con
 // el menú y página final con el pie del sitio): no llevan contenido y, a
@@ -890,6 +936,15 @@ async function convertPdf(file, pageRangeSpec, onLog) {
     if (fields !== null && numeroArchivo) fields.numero = numeroArchivo;
     if (fields === null && esPaginaIntranet(rawText, text)) {
       onLog(`  · Página ${p} omitida (portada/pie de la intranet, sin contenido).`);
+      continue;
+    }
+    // Cabecera ilegible en una página de continuación: se reutiliza la de
+    // la página anterior (misma norma) y el cuerpo se toma sin las líneas
+    // del cuadro.
+    const anterior = [...paginas].reverse().find((pg) => pg.fields);
+    if (fields === null && anterior && text.trim().length >= 300) {
+      onLog(`  · Página ${p}: cabecera ilegible; se reutiliza la de la página anterior.`);
+      paginas.push({ p, canvas, text, fields: { ...anterior.fields, pagina: "" }, bodyText: cuerpoSinCabecera(text) });
       continue;
     }
     paginas.push({ p, canvas, text, fields, bodyText });

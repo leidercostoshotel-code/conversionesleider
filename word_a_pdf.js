@@ -220,7 +220,7 @@ function bloquesDesdeParrafos(pars) {
       const names = [];
       i++;
       while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i])) { names.push(pars[i].text); i++; }
-      blocks.push({ type: "responsables", names });
+      blocks.push({ type: "responsables", names: normalizarResponsables(names, false) });
       continue;
     }
     if ((m = /^(\d{1,2})[.)]\s+(.*)$/.exec(text)) && !bold) {
@@ -304,6 +304,14 @@ function paginasDesdeDocx(elementos) {
       pg.blocks = pg.blocks.slice(vistos);
     }
   }
+  // Página de texto sin cuadro de cabecera: hereda la cabecera de la
+  // página anterior (misma norma), para que ninguna hoja salga sin ella.
+  let ultima = null;
+  for (const pg of paginas) {
+    if (pg.fullImage) continue;
+    if (pg.fields) ultima = pg.fields;
+    else if (ultima) pg.fields = { ...ultima };
+  }
   return paginas;
 }
 
@@ -346,6 +354,7 @@ class PdfEscritor {
     this.y = 0;
     this.numerar = null; // función (k) -> "k/N" cuando se numera en dos pasadas
     this.k = 0;          // página actual dentro del documento
+    this.kCab = 0;       // hojas con cabecera dibujadas hasta ahora
   }
 
   nuevaPagina() {
@@ -358,12 +367,13 @@ class PdfEscritor {
   // Campos de cabecera con el número de página que corresponde a la hoja
   // actual (cuando el documento se numera en dos pasadas).
   camposPagina(f) {
-    return this.numerar ? { ...f, pagina: this.numerar(this.k) } : f;
+    return this.numerar ? { ...f, pagina: this.numerar(this.kCab + 1) } : f;
   }
 
   // Dibuja el cuadro de cabecera en la parte superior de la página actual.
   dibujarCabecera(f) {
     f = this.camposPagina(f);
+    this.kCab++;
     const { regular, bold } = this.fonts;
     const x0 = PDF_BOX_X;
     const xMid = x0 + PDF_HDR_LEFT_W;
@@ -536,15 +546,14 @@ async function convertDocxToPdf(file, onLog) {
   const paginas = paginasDesdeDocx(elementos);
   if (!paginas.length) throw new Error("El Word no tiene contenido reconocible.");
 
-  // Un Word con una sola cabecera y un cuerpo largo (escrito a mano) se
-  // reparte en varias hojas: primero se arma el PDF "en borrador" para saber
-  // cuántas salen, y luego el definitivo numerando "1/N ... N/N".
-  const conCabecera = paginas.filter((pg) => pg.fields);
+  // Las hojas con cabecera se numeran "1/N ... N/N" en dos pasadas: primero
+  // se arma el PDF "en borrador" para saber cuántas salen (un cuerpo largo
+  // se reparte en varias hojas), y luego el definitivo con la numeración.
   let numerar = null;
-  if (conCabecera.length === 1) {
+  if (paginas.some((pg) => pg.fields)) {
     const borrador = await renderizarPdf(paginas, () => {}, null);
-    const total = borrador.getPageCount();
-    if (total > 1) numerar = (k) => `${k}/${total}`;
+    const total = borrador.kCab;
+    if (total > 0) numerar = (k) => `${k}/${total}`;
   }
   const pdfDoc = await renderizarPdf(paginas, onLog, numerar);
   pdfDoc.setTitle(file.name.replace(/\.docx$/i, ""));
@@ -578,5 +587,6 @@ async function renderizarPdf(paginas, onLog, numerar) {
     }
     if (pg.blocks.length) await esc.dibujarContenido(pg.blocks, pg.fields);
   }
+  pdfDoc.kCab = esc.kCab;
   return pdfDoc;
 }
