@@ -958,9 +958,17 @@ const downloadListEl = document.getElementById("downloadList");
 
 let selectedFiles = [];
 
+function esWord(file) {
+  return /\.docx$/i.test(file.name);
+}
+
+function esPdf(file) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
 function updateFileLabel() {
   if (selectedFiles.length === 0) {
-    dropLabel.textContent = "Selecciona uno o varios PDF, o arrástralos aquí";
+    dropLabel.textContent = "Selecciona uno o varios PDF o Word (.docx), o arrástralos aquí";
     convertBtn.disabled = true;
   } else if (selectedFiles.length === 1) {
     dropLabel.textContent = selectedFiles[0].name;
@@ -989,7 +997,7 @@ fileInput.addEventListener("change", () => {
   });
 });
 dropZone.addEventListener("drop", (e) => {
-  const files = Array.from(e.dataTransfer.files || []).filter((f) => f.type === "application/pdf");
+  const files = Array.from(e.dataTransfer.files || []).filter((f) => esPdf(f) || esWord(f));
   if (files.length) {
     selectedFiles = files;
     updateFileLabel();
@@ -1027,8 +1035,15 @@ convertBtn.addEventListener("click", async () => {
     const log = fileLogSection(file.name);
     try {
       log.line("Procesando...");
-      const blob = await convertPdf(file, pageRangeSpec, (msg) => log.line(msg));
-      const outName = file.name.replace(/\.pdf$/i, "") + ".docx";
+      let blob, outName;
+      if (esWord(file)) {
+        // Word -> PDF con el modelo de los manuales (ver word_a_pdf.js)
+        blob = await convertDocxToPdf(file, (msg) => log.line(msg));
+        outName = file.name.replace(/\.docx$/i, "") + ".pdf";
+      } else {
+        blob = await convertPdf(file, pageRangeSpec, (msg) => log.line(msg));
+        outName = file.name.replace(/\.pdf$/i, "") + ".docx";
+      }
       const url = URL.createObjectURL(blob);
 
       const li = document.createElement("li");
@@ -1049,7 +1064,7 @@ convertBtn.addEventListener("click", async () => {
 
   const finalLine = document.createElement("div");
   finalLine.className = "line";
-  finalLine.textContent = "Listo. Revisa el/los .docx generados antes de usarlos (el OCR puede tener errores).";
+  finalLine.textContent = "Listo. Revisa los documentos generados antes de usarlos (el OCR puede tener errores).";
   logEl.appendChild(finalLine);
 
   convertBtn.disabled = false;

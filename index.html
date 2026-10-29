@@ -3,36 +3,36 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF a Word · SPI Swissôtel Lima</title>
+<title>PDF ↔ Word · SPI Swissôtel Lima</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%84%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header>
-    <h1>Convertidor de manuales PDF → Word</h1>
+    <h1>Convertidor de manuales PDF ↔ Word</h1>
     <p class="subtitle">
       Convierte los manuales de procedimientos "SPI Swissôtel Lima" (PDF escaneado)
-      a un documento Word editable, directamente en tu navegador. No se sube ningún
-      archivo a un servidor: todo el proceso (OCR y generación del .docx) ocurre en tu propia
-      computadora.
+      a un documento Word editable, y también un Word de vuelta a PDF con el mismo
+      modelo y la misma letra del PDF original, directamente en tu navegador. No se
+      sube ningún archivo a un servidor: todo el proceso ocurre en tu propia computadora.
     </p>
   </header>
 
   <main>
     <section class="card">
       <label class="file-drop" id="dropZone">
-        <input type="file" id="fileInput" accept="application/pdf" multiple hidden>
-        <span id="dropLabel">Selecciona uno o varios PDF, o arrástralos aquí</span>
+        <input type="file" id="fileInput" accept="application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple hidden>
+        <span id="dropLabel">Selecciona uno o varios PDF o Word (.docx), o arrástralos aquí</span>
       </label>
 
       <div class="options">
         <label>
-          Rango de páginas (opcional, ej. <code>2-3</code>):
+          Rango de páginas del PDF (opcional, ej. <code>2-3</code>):
           <input type="text" id="pageRange" placeholder="todas">
         </label>
       </div>
 
-      <button id="convertBtn" disabled>Convertir a Word</button>
+      <button id="convertBtn" disabled>Convertir (PDF → Word, Word → PDF)</button>
     </section>
 
     <section class="card" id="log" aria-live="polite"></section>
@@ -55,6 +55,11 @@
             información aunque no quede editable.</li>
         <li>El OCR nunca es 100% exacto. Revisa siempre el .docx resultante
             antes de usarlo.</li>
+        <li>Si subes un Word (.docx), se hace el camino inverso: se lee su
+            cuadro de cabecera y su contenido y se genera un PDF con el mismo
+            modelo del manual original (cuadros, títulos en negrita, viñetas,
+            numeración) y siempre con la misma letra, aunque el Word venga
+            con otra. Las imágenes (anexos, formularios) se copian tal cual.</li>
       </ol>
       <p>
         Esta página web es la versión para navegador del script
@@ -72,10 +77,15 @@
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
   <!-- docx: generación del .docx en el navegador -->
   <script src="https://unpkg.com/docx@8.5.0/build/index.umd.js"></script>
+  <!-- JSZip: lectura del .docx (Word -> PDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- pdf-lib: generación del PDF (Word -> PDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 
   <!-- app.js se carga con una marca de tiempo para que el navegador no use
        una copia vieja en caché cuando se publica una versión nueva. -->
   <script>
+    document.write('<script src="word_a_pdf.js?v=' + Date.now() + '"><\/script>');
     document.write('<script src="app.js?v=' + Date.now() + '"><\/script>');
   </script>
 </body>

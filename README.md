@@ -1,7 +1,9 @@
-# Conversión PDF → Word (manuales SPI Swissôtel Lima)
+# Conversión PDF ↔ Word (manuales SPI Swissôtel Lima)
 
 Convierte los manuales de procedimientos "SPI Swissôtel Lima" (PDF escaneado,
-sin capa de texto) a un Word (.docx) editable que replica el diseño original.
+sin capa de texto) a un Word (.docx) editable que replica el diseño original,
+y también un Word de vuelta a PDF con el mismo modelo y la misma letra del PDF
+original (aunque el Word venga con otra letra).
 
 Hay dos formas de usarlo:
 
@@ -9,11 +11,13 @@ Hay dos formas de usarlo:
 
 👉 **[leidercostoshotel-code.github.io/conversionesleider](https://leidercostoshotel-code.github.io/conversionesleider/)**
 
-Todo corre en el navegador (pdf.js + Tesseract.js + docx.js): no se sube
-ningún archivo a un servidor. Solo abre el enlace, selecciona el/los PDF y
-descarga el/los `.docx` generados.
+Todo corre en el navegador (pdf.js + Tesseract.js + docx.js para PDF → Word;
+JSZip + pdf-lib para Word → PDF): no se sube ningún archivo a un servidor.
+Solo abre el enlace, selecciona PDF o Word (.docx) y descarga los documentos
+generados.
 
-Archivos: `index.html`, `app.js`, `style.css`.
+Archivos: `index.html`, `app.js` (PDF → Word), `word_a_pdf.js` (Word → PDF),
+`style.css`.
 
 ## 2. Script de línea de comandos (`pdf_a_word.py`)
 
@@ -27,6 +31,16 @@ pip install python-docx pytesseract pdf2image pillow
 
 python pdf_a_word.py archivo.pdf
 python pdf_a_word.py carpeta_con_pdfs/
+```
+
+Para el camino inverso (Word → PDF) está [`word_a_pdf.py`](word_a_pdf.py),
+equivalente a `word_a_pdf.js` de la app web:
+
+```bash
+pip install python-docx reportlab pillow
+
+python word_a_pdf.py archivo.docx
+python word_a_pdf.py carpeta_con_docx/
 ```
 
 ## Cómo funciona (y sus límites)
