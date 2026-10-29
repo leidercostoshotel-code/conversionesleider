@@ -87,6 +87,40 @@ DPI = 300
 ELABORADA_POR_FIJO = "JACH"
 REVISADO_POR_FIJO = "GPL"
 RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
+# Cargos que van juntos en la lista de responsables (pedido del usuario):
+# si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
+# primero que estaba. Se comparan sin mayúsculas ni guiones.
+PARES_RESPONSABLES = [
+    ["Contralor", "Sub Contralor"],
+    ["Director de Operaciones", "Gerente de Operaciones"],
+]
+
+
+def clave_responsable(n):
+    return re.sub(r"\s+", " ", n.strip().lower().replace("-", " "))
+
+
+def normalizar_responsables(names, fijos_primero):
+    """Completa los cargos que van juntos, quita duplicados y, si
+    `fijos_primero`, antepone siempre Contralor y Sub Contralor. (Misma
+    lógica en word_a_pdf.py.)"""
+    lista = [n.strip() for n in names if n.strip()]
+    for grupo in PARES_RESPONSABLES:
+        claves = [clave_responsable(g) for g in grupo]
+        idx = next((i for i, n in enumerate(lista) if clave_responsable(n) in claves), None)
+        if idx is None:
+            continue
+        lista = lista[:idx] + list(grupo) + [n for n in lista[idx:] if clave_responsable(n) not in claves]
+    if fijos_primero:
+        fijos = [clave_responsable(x) for x in RESPONSABLES_FIJOS]
+        lista = RESPONSABLES_FIJOS + [n for n in lista if clave_responsable(n) not in fijos]
+    vistos, salida = set(), []
+    for n in lista:
+        k = clave_responsable(n)
+        if k not in vistos:
+            vistos.add(k)
+            salida.append(n)
+    return salida
 
 
 def fecha_de_hoy() -> str:
@@ -779,9 +813,7 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            fijos_norm = {x.lower().replace("-", " ") for x in RESPONSABLES_FIJOS}
-            otros = [n for n in b["names"] if n.strip().lower().replace("-", " ") not in fijos_norm]
-            for name in RESPONSABLES_FIJOS + otros:
+            for name in normalizar_responsables(b["names"], True):
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)
@@ -812,6 +844,29 @@ def add_full_page_image(doc, image_path):
 # cuadro de contenido debajo de la cabecera en estos manuales. Se usa para
 # los anexos: formularios con tablas que el OCR no puede reconstruir.
 BODY_CROP = (0.08, 0.228, 0.93, 0.86)  # izquierda, arriba, derecha, abajo
+
+
+def cuerpo_sin_cabecera(text: str) -> str:
+    """Quita del texto OCR de una página las líneas del cuadro de cabecera
+    que no se pudo interpretar: se salta todo hasta la primera línea que
+    parezca cuerpo (marcador de sección, ítem o línea larga), mirando como
+    mucho las 14 primeras líneas."""
+    lines = text.splitlines()
+    start = 0
+    for i in range(min(len(lines), 14)):
+        ln = lines[i].strip()
+        if not ln:
+            continue
+        es_cuerpo = (re.match(r"^(OBJETIVOS?|RESPONSABLES?|PASOS A SEGUIR|POL[IÍ]TICAS)", ln, re.I)
+                     or NUM_ITEM_RE.match(ln) or BULLET_ITEM_RE.match(ln) or len(ln) >= 60)
+        es_cabecera = re.search(
+            r"SPI\s+SWISS|Manual de Procedimientos|P?[aá]gina\s*:|Fecha de elaboraci|Reemplaza a la norma"
+            r"|Elaborada por|Autorizado por|^Area|^[AÁ]rea|^Campo|^Norma", ln, re.I)
+        if es_cuerpo and not es_cabecera:
+            start = i
+            break
+        start = i + 1
+    return "\n".join(lines[start:])
 
 
 # Marcas de las páginas de la intranet que envuelven al manual (portada con
@@ -922,6 +977,15 @@ def convert(pdf_path: Path, out_path: Path, page_range_spec=None, keep_tmp=False
                 if verbose:
                     print(f"  · Página {i + 1} omitida (portada/pie de la intranet, sin contenido).")
                 continue
+            # Cabecera ilegible en una página de continuación: se reutiliza
+            # la de la página anterior (misma norma) y el cuerpo se toma sin
+            # las líneas del cuadro.
+            anterior = next((f for _, f, _ in reversed(paginas) if f), None)
+            if fields is None and anterior and len(text.strip()) >= 300:
+                if verbose:
+                    print(f"  · Página {i + 1}: cabecera ilegible; se reutiliza la de la página anterior.")
+                fields = dict(anterior, pagina="")
+                body_text = cuerpo_sin_cabecera(text)
             paginas.append((img_path, fields, body_text))
         completar_numeros_de_pagina([f for _, f, _ in paginas])
 

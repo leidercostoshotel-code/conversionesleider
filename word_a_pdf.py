@@ -141,6 +141,40 @@ def leer_docx(path):
 # 2. Interpretación: cabecera y cuerpo
 # ------------------------------------------------------------------ #
 
+# Responsables: mismas reglas que en pdf_a_word.py (mantener en sincronía).
+# Aquí no se anteponen los fijos: se respeta el orden del Word, solo se
+# completan los cargos que van juntos y se quitan duplicados.
+RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
+PARES_RESPONSABLES = [
+    ["Contralor", "Sub Contralor"],
+    ["Director de Operaciones", "Gerente de Operaciones"],
+]
+
+
+def clave_responsable(n):
+    return re.sub(r"\s+", " ", n.strip().lower().replace("-", " "))
+
+
+def normalizar_responsables(names, fijos_primero):
+    lista = [n.strip() for n in names if n.strip()]
+    for grupo in PARES_RESPONSABLES:
+        claves = [clave_responsable(g) for g in grupo]
+        idx = next((i for i, n in enumerate(lista) if clave_responsable(n) in claves), None)
+        if idx is None:
+            continue
+        lista = lista[:idx] + list(grupo) + [n for n in lista[idx:] if clave_responsable(n) not in claves]
+    if fijos_primero:
+        fijos = [clave_responsable(x) for x in RESPONSABLES_FIJOS]
+        lista = RESPONSABLES_FIJOS + [n for n in lista if clave_responsable(n) not in fijos]
+    vistos, salida = set(), []
+    for n in lista:
+        k = clave_responsable(n)
+        if k not in vistos:
+            vistos.add(k)
+            salida.append(n)
+    return salida
+
+
 def limpiar_valor(v):
     v = re.sub(r"^\s*[:.\-–—]+\s*", "", v or "")
     return re.sub(r"\s+", " ", v).strip()
@@ -220,7 +254,7 @@ def bloques_desde_parrafos(pars):
             while i < len(pars) and pars[i]["type"] == "paragraph" and not es_titulo_parrafo(pars[i]):
                 names.append(pars[i]["text"])
                 i += 1
-            blocks.append({"type": "responsables", "names": names})
+            blocks.append({"type": "responsables", "names": normalizar_responsables(names, False)})
             continue
         m_num = re.match(r"^(\d{1,2})[.)]\s+(.*)$", text)
         m_let = re.match(r"^([a-h])\)\s+(.*)$", text)
@@ -289,6 +323,16 @@ def paginas_desde_docx(elementos):
                         or any(rx.match(t) for _, rx in DOCX_HEADER_LABELS)):
                     vistos = k + 1
             pg["blocks"] = pg["blocks"][vistos:]
+    # Página de texto sin cuadro de cabecera: hereda la cabecera de la
+    # página anterior (misma norma), para que ninguna hoja salga sin ella.
+    ultima = None
+    for pg in paginas:
+        if "fullImage" in pg:
+            continue
+        if pg.get("fields"):
+            ultima = pg["fields"]
+        elif ultima:
+            pg["fields"] = dict(ultima)
     return paginas
 
 
@@ -325,6 +369,7 @@ class PdfEscritor:
         self.primera = True
         self.numerar = numerar  # función k -> "k/N" cuando se numera en dos pasadas
         self.k = 0              # página actual dentro del documento
+        self.k_cab = 0          # hojas con cabecera dibujadas hasta ahora
 
     def nueva_pagina(self):
         if not self.primera:
@@ -335,7 +380,7 @@ class PdfEscritor:
 
     def campos_pagina(self, f):
         """Campos de cabecera con el número de página de la hoja actual."""
-        return dict(f, pagina=self.numerar(self.k)) if self.numerar else f
+        return dict(f, pagina=self.numerar(self.k_cab + 1)) if self.numerar else f
 
     def _texto(self, s, x, y, font, size):
         self.c.setFont(font, size)
@@ -347,6 +392,7 @@ class PdfEscritor:
 
     def dibujar_cabecera(self, f):
         f = self.campos_pagina(f)
+        self.k_cab += 1
         x0, x_mid, top = PDF_BOX_X, PDF_BOX_X + PDF_HDR_LEFT_W, self.y
         izq1 = [("SPI SWISSÔTEL LIMA", FONT_BOLD, 11), ("Manual de Procedimientos", FONT_REG, 10)]
         der1 = [(f"N°  : {f.get('numero', '')}", FONT_BOLD, 10), (f"Página: {f.get('pagina', '')}", FONT_REG, 10)]
@@ -507,7 +553,7 @@ def renderizar_pdf(paginas, destino, titulo, numerar=None, verbose=True):
         if pg["blocks"]:
             esc.dibujar_contenido(pg["blocks"], pg["fields"])
     c.save()
-    return esc.k
+    return esc.k_cab
 
 
 def convert(docx_path: Path, out_path: Path, verbose=True):
@@ -516,13 +562,13 @@ def convert(docx_path: Path, out_path: Path, verbose=True):
     if not paginas:
         print(f"  ! {docx_path.name}: el Word no tiene contenido reconocible.", file=sys.stderr)
         return
-    # Un Word con una sola cabecera y un cuerpo largo (escrito a mano) se
-    # reparte en varias hojas: primero se arma el PDF "en borrador" para saber
-    # cuántas salen, y luego el definitivo numerando "1/N ... N/N".
+    # Las hojas con cabecera se numeran "1/N ... N/N" en dos pasadas: primero
+    # se arma el PDF "en borrador" para saber cuántas salen (un cuerpo largo
+    # se reparte en varias hojas), y luego el definitivo con la numeración.
     numerar = None
-    if sum(1 for pg in paginas if pg.get("fields")) == 1:
+    if any(pg.get("fields") for pg in paginas):
         total = renderizar_pdf(paginas, io.BytesIO(), docx_path.stem, None, verbose=False)
-        if total > 1:
+        if total > 0:
             numerar = lambda k, total=total: f"{k}/{total}"  # noqa: E731
     renderizar_pdf(paginas, str(out_path), docx_path.stem, numerar, verbose)
     if verbose:
