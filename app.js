@@ -1007,6 +1007,9 @@ const dropLabel = document.getElementById("dropLabel");
 const convertBtn = document.getElementById("convertBtn");
 const pageRangeInput = document.getElementById("pageRange");
 const logEl = document.getElementById("log");
+const logCardEl = document.getElementById("logCard");
+const logSummaryEl = document.getElementById("logSummary");
+const progressEl = document.getElementById("progress");
 const downloadsEl = document.getElementById("downloads");
 const downloadListEl = document.getElementById("downloadList");
 const zipRowEl = document.getElementById("zipRow");
@@ -1114,15 +1117,26 @@ convertBtn.addEventListener("click", async () => {
 
   convertBtn.disabled = true;
   logEl.innerHTML = "";
+  logCardEl.hidden = false;
+  logCardEl.open = selectedFiles.length === 1; // con varios archivos, el detalle va plegado
   downloadListEl.innerHTML = "";
-  downloadsEl.hidden = true;
+  downloadsEl.hidden = false;
   generados = [];
   actualizarZip();
 
   const pageRangeSpec = pageRangeInput.value.trim();
+  const total = selectedFiles.length;
+  let hechos = 0;
+  let errores = 0;
+  const progreso = (actual) => {
+    const parte = `${hechos} de ${total} listos` + (errores ? `, ${errores} con error` : "");
+    progressEl.textContent = actual ? `Procesando ${hechos + errores + 1}/${total}: ${actual} (${parte})` : `${parte}.`;
+    logSummaryEl.textContent = actual ? `Detalle del proceso (procesando ${hechos + errores + 1}/${total})` : "Detalle del proceso";
+  };
 
   for (const file of selectedFiles) {
     const log = fileLogSection(file.name);
+    progreso(file.name);
     try {
       log.line("Procesando...");
       let blob, outName;
@@ -1143,16 +1157,19 @@ convertBtn.addEventListener("click", async () => {
       a.textContent = `Descargar ${outName}`;
       li.appendChild(a);
       downloadListEl.appendChild(li);
-      downloadsEl.hidden = false;
       generados.push({ name: outName, blob });
       actualizarZip();
+      hechos++;
 
       log.line(`Listo -> ${outName}`);
     } catch (err) {
       console.error(err);
       log.line(`Error: ${err.message || err}`, true);
+      errores++;
+      logCardEl.open = true; // un error sí se muestra
     }
   }
+  progreso(null);
 
   const finalLine = document.createElement("div");
   finalLine.className = "line";
