@@ -441,7 +441,9 @@ class PdfEscritor {
     ]) {
       if (f[key]) derFila2.push([`${label} : ${f[key]}`, regular, 9]);
     }
-    derFila2.push([`Autorizado por el Gerente General : ${f.autorizado_por || ""}`.trim(), regular, 9]);
+    // (un valor "General :" es resto de la propia etiqueta, no una firma)
+    const autorizado = /^general\s*:?\s*$/i.test(f.autorizado_por || "") ? "" : (f.autorizado_por || "");
+    derFila2.push([`Autorizado por el Gerente General : ${autorizado}`.trim(), regular, 9]);
 
     const altoCelda = (items, maxW) => {
       let h = PDF_PAD;

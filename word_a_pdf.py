@@ -463,7 +463,11 @@ class PdfEscritor:
                            ("revisado_aprobado", "Revisado y aprobado por")):
             if f.get(key):
                 der2.append((f"{label} : {f[key]}", FONT_REG, 9))
-        der2.append((f"Autorizado por el Gerente General : {f.get('autorizado_por', '')}".strip(), FONT_REG, 9))
+        # (un valor "General :" es resto de la propia etiqueta, no una firma)
+        autorizado = f.get("autorizado_por", "") or ""
+        if re.match(r"^general\s*:?\s*$", autorizado, re.I):
+            autorizado = ""
+        der2.append((f"Autorizado por el Gerente General : {autorizado}".strip(), FONT_REG, 9))
 
         w_izq = PDF_HDR_LEFT_W - 2 * PDF_PAD
         w_der = PDF_BOX_W - PDF_HDR_LEFT_W - 2 * PDF_PAD
