@@ -159,13 +159,30 @@ function limpiarValor(v) {
 // "Manual de Procedimientos Página: 1/2"): cada línea se parte en los
 // puntos donde empieza una etiqueta y el valor es lo que hay hasta la
 // siguiente. Devuelve null si no aparece N° ni Página.
+// Etiqueta sola en su línea (el valor viene en la línea siguiente), como en
+// los Word donde cada celda trae "Área" y debajo "Contraloría".
+const DOCX_LABEL_ONLY_RE = /^(n[°º*o]?|p[aá]gina|[aá]rea|campo|norma|fecha de elaboraci[oó]n|reemplaza a la norma del|elaborad[ao](?: por)?|revisad[ao](?: por)?|referencia corporativa(?: sl)?|revisado y aprobado por|autorizado por el gerente general)\s*:?\s*$/i;
+const DOCX_LABEL_KEYS = [
+  [/^norma/i, "norma_titulo"], [/^n[°º*o]?$/i, "numero"], [/^p/i, "pagina"], [/^[aá]rea/i, "area"], [/^campo/i, "campo"],
+  [/^fecha/i, "fecha_elaboracion"], [/^reemplaza/i, "reemplaza"], [/^elaborad/i, "elaborada_por"],
+  [/^revisado y/i, "revisado_aprobado"], [/^revisad/i, "revisado_por"], [/^referencia/i, "referencia_corporativa"],
+  [/^autorizado/i, "autorizado_por"],
+];
+
 function parseHeaderLineas(lineas) {
   const f = {};
   let encontrado = 0;
+  let pendiente = null; // etiqueta leída sola, a la espera de su valor
   for (const raw of lineas) {
     const ln = raw.trim();
     if (!ln) continue;
     if (/SPI\s+SWISS/i.test(ln) || /Manual de Procedimientos/i.test(ln)) encontrado++;
+    const soloEtiqueta = DOCX_LABEL_ONLY_RE.exec(ln);
+    if (soloEtiqueta) {
+      const k = DOCX_LABEL_KEYS.find(([re]) => re.test(soloEtiqueta[1]));
+      pendiente = k ? k[1] : null;
+      continue;
+    }
     // Todas las etiquetas presentes en la línea, ordenadas por posición.
     const hits = [];
     for (const [key, re] of DOCX_HEADER_LABELS) {
@@ -181,11 +198,16 @@ function parseHeaderLineas(lineas) {
     // aprobado por") no cuenta.
     const limpios = hits.filter((h, i) => !hits.some((o, j) => j !== i && o.start <= h.start && o.end >= h.end && (o.end - o.start) > (h.end - h.start)));
     if (!limpios.length) {
-      if (f.norma_titulo !== undefined && !f.fecha_elaboracion && !/SPI\s+SWISS|Manual de Procedimientos/i.test(ln)) {
+      if (pendiente) {
+        if (f[pendiente] === undefined) f[pendiente] = limpiarValor(ln);
+        encontrado++;
+        pendiente = null;
+      } else if (f.norma_titulo !== undefined && !f.fecha_elaboracion && !/SPI\s+SWISS|Manual de Procedimientos/i.test(ln)) {
         f.norma_titulo = (f.norma_titulo + " " + ln).trim(); // título en 2 líneas
       }
       continue;
     }
+    pendiente = null;
     for (let i = 0; i < limpios.length; i++) {
       const h = limpios[i];
       const fin = i + 1 < limpios.length ? limpios[i + 1].start : ln.length;
@@ -209,17 +231,21 @@ function bloquesDesdeParrafos(pars) {
     const text = p.text;
     const bold = p.runs.length > 0 && p.runs.every((r) => r.bold || !r.text.trim());
     let m;
+    if (/Documento de uso interno/i.test(text)) { i++; continue; } // pie de la intranet
     if (/^OBJETIVOS?\s*:?\s*$/i.test(text)) {
       const partes = [];
       i++;
-      while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i])) { partes.push(pars[i].text); i++; }
+      while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i]) && !esItemLista(pars[i].text)) { partes.push(pars[i].text); i++; }
       blocks.push({ type: "objetivo", text: partes.join(" ") });
       continue;
     }
     if (/^RESPONSABLES?\s*:?\s*$/i.test(text)) {
+      // La lista de nombres termina en un título, un ítem de lista o un
+      // párrafo largo (un Word sin "PASOS A SEGUIR:" sigue directo con los pasos).
       const names = [];
       i++;
-      while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i])) { names.push(pars[i].text); i++; }
+      while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i])
+        && !esItemLista(pars[i].text) && pars[i].text.length <= 60) { names.push(pars[i].text); i++; }
       blocks.push({ type: "responsables", names: normalizarResponsables(names, false) });
       continue;
     }
@@ -229,7 +255,7 @@ function bloquesDesdeParrafos(pars) {
       blocks.push({ type: "letter", letter: m[1], text: m[2] });
     } else if ((m = /^[•·\-*]\s+(.*)$/.exec(text))) {
       blocks.push({ type: "bullet", text: m[1] });
-    } else if (bold || esTituloParrafo(p)) {
+    } else if (bold || esTituloParrafo(p) || esSubtituloCorto(p, pars[i + 1])) {
       blocks.push({ type: "subheading", text });
     } else {
       blocks.push({ type: "paragraph", text });
@@ -239,12 +265,27 @@ function bloquesDesdeParrafos(pars) {
   return blocks;
 }
 
+function esItemLista(t) {
+  return /^(\d{1,2}[.)\-]|[a-h]\)|[•·\-*])\s/.test(t);
+}
+
 function esTituloParrafo(p) {
   if (p.type !== "paragraph") return false;
   const bold = p.runs.length > 0 && p.runs.every((r) => r.bold || !r.text.trim());
   const t = p.text;
   return bold || (t.length <= 45 && t.split(/\s+/).length <= 4 && /:$/.test(t) && /^[A-ZÁÉÍÓÚÑ]/.test(t))
     || (t.length <= 45 && t === t.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(t) && !/[.,;]$/.test(t));
+}
+
+// Subtítulo sin negrita ni ":" (p. ej. "A la Reservación", "Durante la
+// Estadía"): renglón corto, con mayúscula inicial y sin puntuación final,
+// seguido de un párrafo largo o de un ítem de lista.
+function esSubtituloCorto(p, siguiente) {
+  if (p.type !== "paragraph" || !siguiente || siguiente.type !== "paragraph") return false;
+  const t = p.text;
+  if (t.length > 45 || t.split(/\s+/).length > 5 || /[.,;:]$/.test(t) || !/^[A-ZÁÉÍÓÚÑ]/.test(t)) return false;
+  const n = siguiente.text;
+  return n.length >= 80 || /^(\d{1,2}[.)]|[a-h]\)|[•·\-*])\s/.test(n);
 }
 
 // Agrupa los elementos del .docx en "páginas" del modelo:
@@ -282,6 +323,9 @@ function paginasDesdeDocx(elementos) {
       continue;
     }
     if (el.type === "paragraph") {
+      // "SPI SWISSÔTEL LIMA" / "Manual de Procedimientos" sueltos fuera de
+      // la tabla son parte de la cabecera, no del cuerpo.
+      if (/^SPI\s+SWISS|^Manual de Procedimientos/i.test(el.text) && el.text.length <= 60) continue;
       if (!actual) actual = { fields: null, blocks: [] };
       actual.blocks.push(...bloquesDesdeParrafos([el]));
     }
