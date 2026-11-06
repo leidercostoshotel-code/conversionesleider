@@ -87,6 +87,9 @@ DPI = 300
 ELABORADA_POR_FIJO = "JACH"
 REVISADO_POR_FIJO = "GPL"
 RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
+# Con --sin-cambios la cabecera y los responsables se escriben tal como
+# vienen del PDF (sin fechas ni firmas fijas ni parejas de cargos).
+CAMBIOS_AUTOMATICOS = True
 # Cargos que van juntos en la lista de responsables (pedido del usuario):
 # si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
 # primero que estaba. Se comparan sin mayúsculas ni guiones.
@@ -762,13 +765,14 @@ def add_header_table(doc, f):
         add_run(p, f"{label} : {f.get(key, '')}", size=9)
 
     c = table.cell(1, 1)
-    f = dict(
-        f,
-        fecha_elaboracion=fecha_de_hoy(),
-        reemplaza=f.get("fecha_elaboracion") or f.get("reemplaza") or "",
-        elaborada_por=ELABORADA_POR_FIJO,
-        revisado_por=REVISADO_POR_FIJO,
-    )
+    if CAMBIOS_AUTOMATICOS:
+        f = dict(
+            f,
+            fecha_elaboracion=fecha_de_hoy(),
+            reemplaza=f.get("fecha_elaboracion") or f.get("reemplaza") or "",
+            elaborada_por=ELABORADA_POR_FIJO,
+            revisado_por=REVISADO_POR_FIJO,
+        )
     right_fields = [
         ("fecha_elaboracion", "Fecha de elaboración"),
         ("reemplaza", "Reemplaza a la norma del"),
@@ -813,7 +817,8 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            for name in normalizar_responsables(b["names"], True):
+            nombres = normalizar_responsables(b["names"], True) if CAMBIOS_AUTOMATICOS else b["names"]
+            for name in nombres:
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)
@@ -1016,7 +1021,12 @@ def main():
     ap.add_argument("entrada", help="Archivo .pdf o carpeta con varios .pdf")
     ap.add_argument("-o", "--salida", help="Ruta del .docx de salida (solo si 'entrada' es un archivo)")
     ap.add_argument("--paginas", help="Rango de páginas del PDF a convertir, ej: 2-3")
+    ap.add_argument("--sin-cambios", action="store_true",
+                    help="No aplicar los cambios automáticos (fecha de hoy, Elaborada/Revisado por, "
+                         "parejas de responsables): escribir todo tal como está en el PDF")
     args = ap.parse_args()
+    global CAMBIOS_AUTOMATICOS
+    CAMBIOS_AUTOMATICOS = not args.sin_cambios
 
     entrada = Path(args.entrada)
     if entrada.is_dir():

@@ -175,3 +175,18 @@ button#convertBtn:disabled {
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
 }
+
+.options .check {
+  display: block;
+  margin-top: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.options .check input { margin-right: 0.4rem; }
+
+.options .check .hint {
+  display: block;
+  margin: 0.25rem 0 0 1.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
