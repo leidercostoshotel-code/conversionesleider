@@ -30,6 +30,14 @@
           Rango de páginas del PDF (opcional, ej. <code>2-3</code>):
           <input type="text" id="pageRange" placeholder="todas">
         </label>
+        <label class="check">
+          <input type="checkbox" id="autoChanges" checked>
+          Aplicar cambios automáticos
+          <span class="hint">(fecha de hoy en "Fecha de elaboración", la anterior en "Reemplaza",
+            "Elaborada por : JACH", "Revisado por : GPL", y Contralor / Sub Contralor y
+            Director / Gerente de Operaciones en responsables). Desmarcado: se escribe todo tal
+            como está en el documento original.</span>
+        </label>
       </div>
 
       <button id="convertBtn" disabled>Convertir (PDF → Word, Word → PDF)</button>

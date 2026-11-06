@@ -34,6 +34,10 @@ const DPI = 300;
 const ELABORADA_POR_FIJO = "JACH";
 const REVISADO_POR_FIJO = "GPL";
 const RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"];
+// Interruptor "Aplicar cambios automáticos" de la página. Desmarcado, la
+// cabecera y los responsables se escriben tal como vienen del documento
+// original (PDF u Word), sin fechas ni firmas fijas ni parejas de cargos.
+let cambiosAutomaticos = true;
 // Cargos que van juntos en la lista de responsables (pedido del usuario):
 // si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
 // primero que estaba. Se comparan sin mayúsculas ni guiones.
@@ -684,13 +688,15 @@ function buildHeaderTable(f) {
     children: cell10Children,
   });
 
-  f = {
-    ...f,
-    fecha_elaboracion: fechaDeHoy(),
-    reemplaza: f.fecha_elaboracion || f.reemplaza || "",
-    elaborada_por: ELABORADA_POR_FIJO,
-    revisado_por: REVISADO_POR_FIJO,
-  };
+  if (cambiosAutomaticos) {
+    f = {
+      ...f,
+      fecha_elaboracion: fechaDeHoy(),
+      reemplaza: f.fecha_elaboracion || f.reemplaza || "",
+      elaborada_por: ELABORADA_POR_FIJO,
+      revisado_por: REVISADO_POR_FIJO,
+    };
+  }
   const rightFieldsDef = [
     ["fecha_elaboracion", "Fecha de elaboración"],
     ["reemplaza", "Reemplaza a la norma del"],
@@ -732,7 +738,7 @@ function buildContentBox(blocks) {
         break;
       case "responsables":
         children.push(makeParagraph("RESPONSABLES:", { bold: true }));
-        for (const name of normalizarResponsables(b.names, true)) children.push(makeParagraph(name));
+        for (const name of (cambiosAutomaticos ? normalizarResponsables(b.names, true) : b.names)) children.push(makeParagraph(name));
         break;
       case "subheading":
         children.push(makeParagraph(b.text, { bold: true }));
@@ -1006,6 +1012,7 @@ const dropZone = document.getElementById("dropZone");
 const dropLabel = document.getElementById("dropLabel");
 const convertBtn = document.getElementById("convertBtn");
 const pageRangeInput = document.getElementById("pageRange");
+const autoChangesInput = document.getElementById("autoChanges");
 const logEl = document.getElementById("log");
 const logCardEl = document.getElementById("logCard");
 const logSummaryEl = document.getElementById("logSummary");
@@ -1125,6 +1132,7 @@ convertBtn.addEventListener("click", async () => {
   actualizarZip();
 
   const pageRangeSpec = pageRangeInput.value.trim();
+  cambiosAutomaticos = autoChangesInput.checked;
   const total = selectedFiles.length;
   let hechos = 0;
   let errores = 0;

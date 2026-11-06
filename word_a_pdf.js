@@ -246,7 +246,9 @@ function bloquesDesdeParrafos(pars) {
       i++;
       while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i])
         && !esItemLista(pars[i].text) && pars[i].text.length <= 60) { names.push(pars[i].text); i++; }
-      blocks.push({ type: "responsables", names: normalizarResponsables(names, false) });
+      // (las parejas de cargos solo con "cambios automáticos" activado)
+      const auto = typeof cambiosAutomaticos === "undefined" || cambiosAutomaticos;
+      blocks.push({ type: "responsables", names: auto ? normalizarResponsables(names, false) : names });
       continue;
     }
     if ((m = /^(\d{1,2})[.)]\s+(.*)$/.exec(text)) && !bold) {
