@@ -35,16 +35,22 @@
       <button id="convertBtn" disabled>Convertir (PDF → Word, Word → PDF)</button>
     </section>
 
-    <section class="card" id="log" aria-live="polite"></section>
-
+    <!-- Las descargas van ANTES del detalle del proceso, para no tener que
+         bajar hasta el final cuando se convierten muchos archivos. -->
     <section class="card" id="downloads" hidden>
       <h2>Documentos generados</h2>
+      <p class="progress" id="progress" aria-live="polite"></p>
       <p class="zip-row" id="zipRow" hidden>
         <button id="zipBtn" type="button">Descargar todos en un ZIP</button>
         <span id="zipInfo" class="zip-info"></span>
       </p>
       <ul id="downloadList"></ul>
     </section>
+
+    <details class="card" id="logCard" hidden>
+      <summary id="logSummary">Detalle del proceso</summary>
+      <div id="log"></div>
+    </details>
 
     <section class="card notice">
       <h2>Cómo funciona (y sus límites)</h2>

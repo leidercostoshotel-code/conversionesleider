@@ -91,7 +91,23 @@ button#convertBtn:disabled {
   cursor: not-allowed;
 }
 
-#log:empty { display: none; }
+#logCard[hidden] { display: none; }
+
+#logCard summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+#logCard[open] summary { margin-bottom: 0.75rem; }
+
+#downloads .progress {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+#downloads .progress:empty { display: none; }
 
 #log .file-log {
   margin-bottom: 1rem;

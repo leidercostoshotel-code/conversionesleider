@@ -180,6 +180,22 @@ def limpiar_valor(v):
     return re.sub(r"\s+", " ", v).strip()
 
 
+# Etiqueta sola en su línea (el valor viene en la línea siguiente), como en
+# los Word donde cada celda trae "Área" y debajo "Contraloría".
+DOCX_LABEL_ONLY_RE = re.compile(
+    r"^(n[°º*o]?|p[aá]gina|[aá]rea|campo|norma|fecha de elaboraci[oó]n|reemplaza a la norma del"
+    r"|elaborad[ao](?: por)?|revisad[ao](?: por)?|referencia corporativa(?: sl)?|revisado y aprobado por"
+    r"|autorizado por el gerente general)\s*:?\s*$", re.I)
+DOCX_LABEL_KEYS = [
+    (re.compile(r"^norma", re.I), "norma_titulo"), (re.compile(r"^n[°º*o]?$", re.I), "numero"),
+    (re.compile(r"^p", re.I), "pagina"), (re.compile(r"^[aá]rea", re.I), "area"),
+    (re.compile(r"^campo", re.I), "campo"), (re.compile(r"^fecha", re.I), "fecha_elaboracion"),
+    (re.compile(r"^reemplaza", re.I), "reemplaza"), (re.compile(r"^elaborad", re.I), "elaborada_por"),
+    (re.compile(r"^revisado y", re.I), "revisado_aprobado"), (re.compile(r"^revisad", re.I), "revisado_por"),
+    (re.compile(r"^referencia", re.I), "referencia_corporativa"), (re.compile(r"^autorizado", re.I), "autorizado_por"),
+]
+
+
 def parse_header_lineas(lineas):
     """Reconoce "Etiqueta : valor" en una lista de líneas. Las etiquetas
     pueden venir en medio de una línea (p. ej. "SPI SWISSÔTEL LIMA N°
@@ -187,12 +203,17 @@ def parse_header_lineas(lineas):
     parte donde empieza una etiqueta y el valor es lo que hay hasta la
     siguiente. Devuelve None si no aparece N° ni Página."""
     f, encontrado = {}, 0
+    pendiente = None  # etiqueta leída sola, a la espera de su valor
     for raw in lineas:
         ln = raw.strip()
         if not ln:
             continue
         if re.search(r"SPI\s+SWISS", ln, re.I) or re.search(r"Manual de Procedimientos", ln, re.I):
             encontrado += 1
+        solo = DOCX_LABEL_ONLY_RE.match(ln)
+        if solo:
+            pendiente = next((k for rx, k in DOCX_LABEL_KEYS if rx.match(solo.group(1))), None)
+            continue
         hits = []
         for key, rx in DOCX_HEADER_LABELS:
             for m in rx.finditer(ln):
@@ -204,10 +225,16 @@ def parse_header_lineas(lineas):
                    if not any(o is not h and o[0] <= h[0] and o[1] >= h[1] and (o[1] - o[0]) > (h[1] - h[0])
                               for o in hits)]
         if not limpios:
-            if ("norma_titulo" in f and not f.get("fecha_elaboracion")
+            if pendiente:
+                if pendiente not in f:
+                    f[pendiente] = limpiar_valor(ln)
+                encontrado += 1
+                pendiente = None
+            elif ("norma_titulo" in f and not f.get("fecha_elaboracion")
                     and not re.search(r"SPI\s+SWISS|Manual de Procedimientos", ln, re.I)):
                 f["norma_titulo"] = (f["norma_titulo"] + " " + ln).strip()  # título en 2 líneas
             continue
+        pendiente = None
         for i, (start, end, key) in enumerate(limpios):
             fin = limpios[i + 1][0] if i + 1 < len(limpios) else len(ln)
             if key not in f:
@@ -222,6 +249,10 @@ def _es_negrita(p):
     return bool(p["runs"]) and all(b or not t.strip() for t, b in p["runs"])
 
 
+def es_item_lista(t):
+    return re.match(r"^(\d{1,2}[.)\-]|[a-h]\)|[•·\-*])\s", t) is not None
+
+
 def es_titulo_parrafo(p):
     if p["type"] != "paragraph":
         return False
@@ -233,6 +264,19 @@ def es_titulo_parrafo(p):
     return len(t) <= 45 and t.isupper() and not t.endswith((".", ",", ";"))
 
 
+def es_subtitulo_corto(p, siguiente):
+    """Subtítulo sin negrita ni ":" (p. ej. "A la Reservación"): renglón
+    corto, con mayúscula inicial y sin puntuación final, seguido de un
+    párrafo largo o de un ítem de lista."""
+    if p["type"] != "paragraph" or not siguiente or siguiente["type"] != "paragraph":
+        return False
+    t = p["text"]
+    if len(t) > 45 or len(t.split()) > 5 or t.endswith((".", ",", ";", ":")) or not t[:1].isupper():
+        return False
+    n = siguiente["text"]
+    return len(n) >= 80 or re.match(r"^(\d{1,2}[.)]|[a-h]\)|[•·\-*])\s", n) is not None
+
+
 def bloques_desde_parrafos(pars):
     blocks, i = [], 0
     while i < len(pars):
@@ -242,16 +286,23 @@ def bloques_desde_parrafos(pars):
             i += 1
             continue
         text, bold = p["text"], _es_negrita(p)
+        if re.search(r"Documento de uso interno", text, re.I):  # pie de la intranet
+            i += 1
+            continue
         if re.match(r"^OBJETIVOS?\s*:?\s*$", text, re.I):
             partes, i = [], i + 1
-            while i < len(pars) and pars[i]["type"] == "paragraph" and not es_titulo_parrafo(pars[i]):
+            while (i < len(pars) and pars[i]["type"] == "paragraph" and not es_titulo_parrafo(pars[i])
+                   and not es_item_lista(pars[i]["text"])):
                 partes.append(pars[i]["text"])
                 i += 1
             blocks.append({"type": "objetivo", "text": " ".join(partes)})
             continue
         if re.match(r"^RESPONSABLES?\s*:?\s*$", text, re.I):
+            # La lista de nombres termina en un título, un ítem de lista o un
+            # párrafo largo (un Word sin "PASOS A SEGUIR:" sigue directo con los pasos).
             names, i = [], i + 1
-            while i < len(pars) and pars[i]["type"] == "paragraph" and not es_titulo_parrafo(pars[i]):
+            while (i < len(pars) and pars[i]["type"] == "paragraph" and not es_titulo_parrafo(pars[i])
+                   and not es_item_lista(pars[i]["text"]) and len(pars[i]["text"]) <= 60):
                 names.append(pars[i]["text"])
                 i += 1
             blocks.append({"type": "responsables", "names": normalizar_responsables(names, False)})
@@ -265,7 +316,7 @@ def bloques_desde_parrafos(pars):
             blocks.append({"type": "letter", "letter": m_let.group(1), "text": m_let.group(2)})
         elif m_bul:
             blocks.append({"type": "bullet", "text": m_bul.group(1)})
-        elif bold or es_titulo_parrafo(p):
+        elif bold or es_titulo_parrafo(p) or es_subtitulo_corto(p, pars[i + 1] if i + 1 < len(pars) else None):
             blocks.append({"type": "subheading", "text": text})
         else:
             blocks.append({"type": "paragraph", "text": text})
@@ -303,6 +354,10 @@ def paginas_desde_docx(elementos):
                 cerrar()
                 paginas.append({"fullImage": {"bytes": el["bytes"], "ext": el["ext"]}})
         elif el["type"] == "paragraph":
+            # "SPI SWISSÔTEL LIMA" / "Manual de Procedimientos" sueltos fuera
+            # de la tabla son parte de la cabecera, no del cuerpo.
+            if re.match(r"^SPI\s+SWISS|^Manual de Procedimientos", el["text"], re.I) and len(el["text"]) <= 60:
+                continue
             if actual is None:
                 actual = {"fields": None, "blocks": []}
             actual["blocks"].extend(bloques_desde_parrafos([el]))
@@ -408,7 +463,11 @@ class PdfEscritor:
                            ("revisado_aprobado", "Revisado y aprobado por")):
             if f.get(key):
                 der2.append((f"{label} : {f[key]}", FONT_REG, 9))
-        der2.append((f"Autorizado por el Gerente General : {f.get('autorizado_por', '')}".strip(), FONT_REG, 9))
+        # (un valor "General :" es resto de la propia etiqueta, no una firma)
+        autorizado = f.get("autorizado_por", "") or ""
+        if re.match(r"^general\s*:?\s*$", autorizado, re.I):
+            autorizado = ""
+        der2.append((f"Autorizado por el Gerente General : {autorizado}".strip(), FONT_REG, 9))
 
         w_izq = PDF_HDR_LEFT_W - 2 * PDF_PAD
         w_der = PDF_BOX_W - PDF_HDR_LEFT_W - 2 * PDF_PAD
