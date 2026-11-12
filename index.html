@@ -31,12 +31,19 @@
           <input type="text" id="pageRange" placeholder="todas">
         </label>
         <label class="check">
-          <input type="checkbox" id="autoChanges" checked>
-          Aplicar cambios automáticos
-          <span class="hint">(fecha de hoy en "Fecha de elaboración", la anterior en "Reemplaza",
+          Cambios automáticos:
+          <select id="autoMode">
+            <option value="completo" selected>Completos: fechas, firmas y responsables</option>
+            <option value="fechas">Solo fechas</option>
+            <option value="ninguno">Ninguno: tal como está en el original</option>
+          </select>
+          <span class="hint">
+            <b>Completos</b>: fecha de hoy en "Fecha de elaboración", la anterior en "Reemplaza",
             "Elaborada por : JACH", "Revisado por : GPL", y Contralor / Sub Contralor y
-            Director / Gerente de Operaciones en responsables). Desmarcado: se escribe todo tal
-            como está en el documento original.</span>
+            Director / Gerente de Operaciones en responsables.
+            <b>Solo fechas</b>: únicamente la fecha de hoy y la anterior en "Reemplaza"; el resto
+            (Elaborada por, responsables) queda como en el original.
+            <b>Ninguno</b>: se escribe todo tal como está en el documento original.</span>
         </label>
       </div>
 

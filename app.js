@@ -34,10 +34,33 @@ const DPI = 300;
 const ELABORADA_POR_FIJO = "JACH";
 const REVISADO_POR_FIJO = "GPL";
 const RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"];
-// Interruptor "Aplicar cambios automáticos" de la página. Desmarcado, la
-// cabecera y los responsables se escriben tal como vienen del documento
-// original (PDF u Word), sin fechas ni firmas fijas ni parejas de cargos.
-let cambiosAutomaticos = true;
+// Selector "Cambios automáticos" de la página:
+//   "completo": fechas + firmas (JACH / GPL) + parejas de responsables.
+//   "fechas":   solo fecha de hoy en "Fecha de elaboración" y la anterior
+//               en "Reemplaza"; lo demás queda como en el original.
+//   "ninguno":  todo tal como viene del documento original (PDF o Word).
+let modoCambios = "completo";
+
+// Aplica a los campos de cabecera lo que corresponda según el modo. El
+// cambio de fechas no se repite si la fecha de elaboración ya es la de hoy
+// (p. ej. un Word generado hoy por esta misma app que se vuelve a convertir).
+function aplicarCambiosCabecera(f) {
+  if (modoCambios === "ninguno") return f;
+  const hoy = fechaDeHoy();
+  let g = { ...f };
+  if ((g.fecha_elaboracion || "") !== hoy) {
+    g = { ...g, fecha_elaboracion: hoy, reemplaza: g.fecha_elaboracion || g.reemplaza || "" };
+  }
+  if (modoCambios === "completo") {
+    g = { ...g, elaborada_por: ELABORADA_POR_FIJO, revisado_por: REVISADO_POR_FIJO };
+  }
+  return g;
+}
+
+// Responsables según el modo: las parejas de cargos solo con "completo".
+function responsablesSegunModo(names, fijosPrimero) {
+  return modoCambios === "completo" ? normalizarResponsables(names, fijosPrimero) : names;
+}
 // Cargos que van juntos en la lista de responsables (pedido del usuario):
 // si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
 // primero que estaba. Se comparan sin mayúsculas ni guiones.
@@ -688,15 +711,7 @@ function buildHeaderTable(f) {
     children: cell10Children,
   });
 
-  if (cambiosAutomaticos) {
-    f = {
-      ...f,
-      fecha_elaboracion: fechaDeHoy(),
-      reemplaza: f.fecha_elaboracion || f.reemplaza || "",
-      elaborada_por: ELABORADA_POR_FIJO,
-      revisado_por: REVISADO_POR_FIJO,
-    };
-  }
+  f = aplicarCambiosCabecera(f);
   const rightFieldsDef = [
     ["fecha_elaboracion", "Fecha de elaboración"],
     ["reemplaza", "Reemplaza a la norma del"],
@@ -738,7 +753,7 @@ function buildContentBox(blocks) {
         break;
       case "responsables":
         children.push(makeParagraph("RESPONSABLES:", { bold: true }));
-        for (const name of (cambiosAutomaticos ? normalizarResponsables(b.names, true) : b.names)) children.push(makeParagraph(name));
+        for (const name of responsablesSegunModo(b.names, true)) children.push(makeParagraph(name));
         break;
       case "subheading":
         children.push(makeParagraph(b.text, { bold: true }));
@@ -1012,7 +1027,7 @@ const dropZone = document.getElementById("dropZone");
 const dropLabel = document.getElementById("dropLabel");
 const convertBtn = document.getElementById("convertBtn");
 const pageRangeInput = document.getElementById("pageRange");
-const autoChangesInput = document.getElementById("autoChanges");
+const autoModeInput = document.getElementById("autoMode");
 const logEl = document.getElementById("log");
 const logCardEl = document.getElementById("logCard");
 const logSummaryEl = document.getElementById("logSummary");
@@ -1132,7 +1147,7 @@ convertBtn.addEventListener("click", async () => {
   actualizarZip();
 
   const pageRangeSpec = pageRangeInput.value.trim();
-  cambiosAutomaticos = autoChangesInput.checked;
+  modoCambios = autoModeInput.value;
   const total = selectedFiles.length;
   let hechos = 0;
   let errores = 0;

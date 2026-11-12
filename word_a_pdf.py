@@ -145,8 +145,32 @@ def leer_docx(path):
 # Aquí no se anteponen los fijos: se respeta el orden del Word, solo se
 # completan los cargos que van juntos y se quitan duplicados.
 RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
-# Con --sin-cambios los responsables se escriben tal como vienen del Word.
-CAMBIOS_AUTOMATICOS = True
+# Modo de cambios automáticos (opción --cambios), igual que en pdf_a_word.py:
+#   "completo": fechas + firmas (JACH / GPL) + parejas de responsables.
+#   "fechas":   solo fecha de hoy en "Fecha de elaboración" y la anterior en
+#               "Reemplaza"; lo demás queda como en el original.
+#   "ninguno":  todo tal como viene del Word.
+MODO_CAMBIOS = "completo"
+ELABORADA_POR_FIJO = "JACH"
+REVISADO_POR_FIJO = "GPL"
+
+
+def fecha_de_hoy():
+    from datetime import date
+    return date.today().strftime("%d.%m.%Y")
+
+
+def aplicar_cambios_cabecera(f):
+    """Igual que en pdf_a_word.py (mantener en sincronía)."""
+    if MODO_CAMBIOS == "ninguno":
+        return f
+    hoy = fecha_de_hoy()
+    g = dict(f)
+    if (g.get("fecha_elaboracion") or "") != hoy:
+        g = dict(g, fecha_elaboracion=hoy, reemplaza=g.get("fecha_elaboracion") or g.get("reemplaza") or "")
+    if MODO_CAMBIOS == "completo":
+        g = dict(g, elaborada_por=ELABORADA_POR_FIJO, revisado_por=REVISADO_POR_FIJO)
+    return g
 PARES_RESPONSABLES = [
     ["Contralor", "Sub Contralor"],
     ["Director de Operaciones", "Gerente de Operaciones"],
@@ -308,7 +332,7 @@ def bloques_desde_parrafos(pars):
                 names.append(pars[i]["text"])
                 i += 1
             blocks.append({"type": "responsables",
-                           "names": normalizar_responsables(names, False) if CAMBIOS_AUTOMATICOS else names})
+                           "names": normalizar_responsables(names, False) if MODO_CAMBIOS == "completo" else names})
             continue
         m_num = re.match(r"^(\d{1,2})[.)]\s+(.*)$", text)
         m_let = re.match(r"^([a-h])\)\s+(.*)$", text)
@@ -449,7 +473,7 @@ class PdfEscritor:
         self.c.rect(x, y, w, h)
 
     def dibujar_cabecera(self, f):
-        f = self.campos_pagina(f)
+        f = aplicar_cambios_cabecera(self.campos_pagina(f))
         self.k_cab += 1
         x0, x_mid, top = PDF_BOX_X, PDF_BOX_X + PDF_HDR_LEFT_W, self.y
         izq1 = [("SPI SWISSÔTEL LIMA", FONT_BOLD, 11), ("Manual de Procedimientos", FONT_REG, 10)]
@@ -641,11 +665,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("entrada", help="Archivo .docx o carpeta con varios .docx")
     ap.add_argument("-o", "--salida", help="Ruta del .pdf de salida (solo si 'entrada' es un archivo)")
-    ap.add_argument("--sin-cambios", action="store_true",
-                    help="No completar las parejas de responsables: escribir todo tal como está en el Word")
+    ap.add_argument("--cambios", choices=("completo", "fechas", "ninguno"), default="completo",
+                    help="Cambios automáticos: completo (fechas, Elaborada/Revisado por y parejas de "
+                         "responsables), fechas (solo fecha de hoy y la anterior en Reemplaza) o "
+                         "ninguno (todo tal como está en el Word)")
+    ap.add_argument("--sin-cambios", action="store_true", help="Igual que --cambios ninguno")
     args = ap.parse_args()
-    global CAMBIOS_AUTOMATICOS
-    CAMBIOS_AUTOMATICOS = not args.sin_cambios
+    global MODO_CAMBIOS
+    MODO_CAMBIOS = "ninguno" if args.sin_cambios else args.cambios
 
     entrada = Path(args.entrada)
     if entrada.is_dir():
