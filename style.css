@@ -183,6 +183,8 @@ button#convertBtn:disabled {
 }
 
 .options .check input { margin-right: 0.4rem; }
+.options .check select { margin-left: 0.4rem; font-size: 0.95rem; padding: 0.2rem 0.4rem; }
+.options .check .hint b { color: var(--ink, inherit); font-weight: 600; }
 
 .options .check .hint {
   display: block;

@@ -246,9 +246,9 @@ function bloquesDesdeParrafos(pars) {
       i++;
       while (i < pars.length && pars[i].type === "paragraph" && !esTituloParrafo(pars[i])
         && !esItemLista(pars[i].text) && pars[i].text.length <= 60) { names.push(pars[i].text); i++; }
-      // (las parejas de cargos solo con "cambios automáticos" activado)
-      const auto = typeof cambiosAutomaticos === "undefined" || cambiosAutomaticos;
-      blocks.push({ type: "responsables", names: auto ? normalizarResponsables(names, false) : names });
+      // (las parejas de cargos solo en modo "completo"; ver app.js)
+      const nombres = typeof responsablesSegunModo === "function" ? responsablesSegunModo(names, false) : names;
+      blocks.push({ type: "responsables", names: nombres });
       continue;
     }
     if ((m = /^(\d{1,2})[.)]\s+(.*)$/.exec(text)) && !bold) {
@@ -419,6 +419,8 @@ class PdfEscritor {
   // Dibuja el cuadro de cabecera en la parte superior de la página actual.
   dibujarCabecera(f) {
     f = this.camposPagina(f);
+    // Mismo selector de cambios automáticos que PDF -> Word (ver app.js).
+    if (typeof aplicarCambiosCabecera === "function") f = aplicarCambiosCabecera(f);
     this.kCab++;
     const { regular, bold } = this.fonts;
     const x0 = PDF_BOX_X;

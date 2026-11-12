@@ -87,9 +87,31 @@ DPI = 300
 ELABORADA_POR_FIJO = "JACH"
 REVISADO_POR_FIJO = "GPL"
 RESPONSABLES_FIJOS = ["Contralor", "Sub Contralor"]
-# Con --sin-cambios la cabecera y los responsables se escriben tal como
-# vienen del PDF (sin fechas ni firmas fijas ni parejas de cargos).
-CAMBIOS_AUTOMATICOS = True
+# Modo de cambios automáticos (opción --cambios):
+#   "completo": fechas + firmas (JACH / GPL) + parejas de responsables.
+#   "fechas":   solo fecha de hoy en "Fecha de elaboración" y la anterior en
+#               "Reemplaza"; lo demás queda como en el original.
+#   "ninguno":  todo tal como viene del PDF.
+MODO_CAMBIOS = "completo"
+
+
+def aplicar_cambios_cabecera(f):
+    """Aplica a los campos de cabecera lo que corresponda según el modo. El
+    cambio de fechas no se repite si la fecha de elaboración ya es la de hoy."""
+    if MODO_CAMBIOS == "ninguno":
+        return f
+    hoy = fecha_de_hoy()
+    g = dict(f)
+    if (g.get("fecha_elaboracion") or "") != hoy:
+        g = dict(g, fecha_elaboracion=hoy, reemplaza=g.get("fecha_elaboracion") or g.get("reemplaza") or "")
+    if MODO_CAMBIOS == "completo":
+        g = dict(g, elaborada_por=ELABORADA_POR_FIJO, revisado_por=REVISADO_POR_FIJO)
+    return g
+
+
+def responsables_segun_modo(names, fijos_primero):
+    """Las parejas de cargos solo en modo "completo"."""
+    return normalizar_responsables(names, fijos_primero) if MODO_CAMBIOS == "completo" else names
 # Cargos que van juntos en la lista de responsables (pedido del usuario):
 # si aparece uno de ellos, aparecen todos, en este orden y en el lugar del
 # primero que estaba. Se comparan sin mayúsculas ni guiones.
@@ -765,14 +787,7 @@ def add_header_table(doc, f):
         add_run(p, f"{label} : {f.get(key, '')}", size=9)
 
     c = table.cell(1, 1)
-    if CAMBIOS_AUTOMATICOS:
-        f = dict(
-            f,
-            fecha_elaboracion=fecha_de_hoy(),
-            reemplaza=f.get("fecha_elaboracion") or f.get("reemplaza") or "",
-            elaborada_por=ELABORADA_POR_FIJO,
-            revisado_por=REVISADO_POR_FIJO,
-        )
+    f = aplicar_cambios_cabecera(f)
     right_fields = [
         ("fecha_elaboracion", "Fecha de elaboración"),
         ("reemplaza", "Reemplaza a la norma del"),
@@ -817,8 +832,7 @@ def add_content_box(doc, blocks):
             add_run(new_para(), b["text"])
         elif t == "responsables":
             add_run(new_para(), "RESPONSABLES:", bold=True)
-            nombres = normalizar_responsables(b["names"], True) if CAMBIOS_AUTOMATICOS else b["names"]
-            for name in nombres:
+            for name in responsables_segun_modo(b["names"], True):
                 add_run(new_para(), name)
         elif t == "subheading":
             add_run(new_para(), b["text"], bold=True)
@@ -1021,12 +1035,14 @@ def main():
     ap.add_argument("entrada", help="Archivo .pdf o carpeta con varios .pdf")
     ap.add_argument("-o", "--salida", help="Ruta del .docx de salida (solo si 'entrada' es un archivo)")
     ap.add_argument("--paginas", help="Rango de páginas del PDF a convertir, ej: 2-3")
-    ap.add_argument("--sin-cambios", action="store_true",
-                    help="No aplicar los cambios automáticos (fecha de hoy, Elaborada/Revisado por, "
-                         "parejas de responsables): escribir todo tal como está en el PDF")
+    ap.add_argument("--cambios", choices=("completo", "fechas", "ninguno"), default="completo",
+                    help="Cambios automáticos: completo (fechas, Elaborada/Revisado por y parejas de "
+                         "responsables), fechas (solo fecha de hoy y la anterior en Reemplaza) o "
+                         "ninguno (todo tal como está en el PDF)")
+    ap.add_argument("--sin-cambios", action="store_true", help="Igual que --cambios ninguno")
     args = ap.parse_args()
-    global CAMBIOS_AUTOMATICOS
-    CAMBIOS_AUTOMATICOS = not args.sin_cambios
+    global MODO_CAMBIOS
+    MODO_CAMBIOS = "ninguno" if args.sin_cambios else args.cambios
 
     entrada = Path(args.entrada)
     if entrada.is_dir():
